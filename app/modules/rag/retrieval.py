@@ -40,6 +40,13 @@ _MIN_TERM_OVERLAP = 0.4
 _SIG_TOP1_FLOOR = 0.30
 _SIG_REL_MARGIN = 0.35
 
+# 邻接兜底参数。
+# 非标准文档里"题目"与"答案"常被切成相邻两段（或历史数据已经这样入库），
+# 只召回其中一段会出现"引用只有标题没有正文"。命中分段过短时补同文档 order±1，
+# 让旧数据不重新切片也能得到完整上下文。
+_NEIGHBOR_MIN_CHARS = 200      # 命中分段正文短于该长度才补邻居
+_NEIGHBOR_MAX_CHARS = 900      # 补全后的分段长度上限（避免把整章塞进上下文）
+
 
 def _sigmoid(x: float) -> float:
     """logits → 0~1 概率（防溢出）。"""
@@ -60,6 +67,65 @@ async def _load_metadata(chunk_ids: list[str]) -> dict[str, dict]:
                 KnowledgeSegment.chunk_id.in_(chunk_ids),
                 KnowledgeSegment.deleted == 0))).all()
     return {r.chunk_id: {"metadata": r.metadata_ or {}, "text": r.text} for r in rows}
+
+
+async def _expand_short_neighbors(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """命中分段过短时补同文档相邻分段（order-1 / order+1）。
+
+    只处理"没有父分段"的普通分段：父分段回溯后本身已是完整章节，
+    再补邻居会把同一章内容重复注入。相邻分段已在结果集中时跳过，避免重复。
+    每个文档版本只查一次库，代价可控。
+    """
+    targets = [c for c in chunks
+                if len(c.text.strip()) < _NEIGHBOR_MIN_CHARS
+                and not c.metadata.get(MetaKey.PARENT_CHUNK_ID)
+                and c.metadata.get(MetaKey.ORDER) is not None]
+    if not targets:
+        return chunks
+
+    by_version: dict[int, list[RetrievedChunk]] = {}
+    for c in targets:
+        by_version.setdefault(c.doc_version, []).append(c)
+
+    texts: dict[tuple[int, int], str] = {}
+    ids: dict[tuple[int, int], str] = {}
+    existing = {c.chunk_id for c in chunks}
+    for version, items in by_version.items():
+        orders = [int(c.metadata[MetaKey.ORDER]) for c in items]
+        async with session_scope() as session:
+            rows = (await session.execute(
+                select(KnowledgeSegment.chunk_order, KnowledgeSegment.text,
+                       KnowledgeSegment.chunk_id).where(
+                    KnowledgeSegment.document_version == version,
+                    KnowledgeSegment.deleted == 0,
+                    KnowledgeSegment.skip_embedding == 0,
+                    KnowledgeSegment.chunk_order.between(min(orders) - 1, max(orders) + 1)))).all()
+        for order, text, chunk_id in rows:
+            texts[(version, order)] = text
+            ids[(version, order)] = chunk_id
+
+    expanded = 0
+    for c in targets:
+        version, order = c.doc_version, int(c.metadata[MetaKey.ORDER])
+        pieces = [c.text.strip()]
+        for neighbor_order in (order - 1, order + 1):
+            chunk_id = ids.get((version, neighbor_order))
+            piece = texts.get((version, neighbor_order))
+            if not piece or chunk_id in existing:
+                continue
+            if neighbor_order < order:
+                pieces.insert(0, piece.strip())
+            else:
+                pieces.append(piece.strip())
+        merged = "\n\n".join(p for p in pieces if p)
+        if merged and len(merged) > len(c.text):
+            c.text = merged[:_NEIGHBOR_MAX_CHARS]
+            c.metadata["neighborExpanded"] = True
+            expanded += 1
+
+    if expanded:
+        logger.info("neighbor_expanded", total=len(chunks), expanded=expanded)
+    return chunks
 
 
 async def retrieve(query_text: str, *, user_identity: str | None = None,
@@ -125,6 +191,9 @@ async def retrieve(query_text: str, *, user_identity: str | None = None,
             chunk_id=h.chunk_id, text=h.text, score=h.score, document_id=h.document_id,
             doc_version=h.doc_version, title=title, source=h.source,
             similarity=h.vector_score, metadata=meta))
+
+    # 3. 邻接兜底：短分段补同文档前后段（标题与正文被切开时仍能得到完整上下文）
+    chunks = await _expand_short_neighbors(chunks)
 
     logger.info("retrieve_done", query=query_text[:60], hits=len(hits),
                 chunks=len(chunks), vector=query_vector is not None,
