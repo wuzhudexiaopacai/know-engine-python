@@ -9,12 +9,11 @@ html, body, #app {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-family: var(--ke-font-sans);
   font-size: 14px;
   line-height: 1.6;
-  color: var(--ke-gray-800);
-  background: var(--ke-gray-50);
+  color: var(--ke-text-1);
+  background: var(--ke-bg-page);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -57,10 +56,10 @@ a { color: var(--ke-brand-500); text-decoration: none; }
 }
 
 .ke-card {
-  background: #fff;
-  border: 1px solid var(--ke-brand-100);
+  background: var(--ke-bg-card);
+  border: 1px solid var(--ke-gray-100);
   border-radius: var(--ke-radius-lg);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  box-shadow: var(--ke-glow);
 }
 /* 列表型卡片：表格贴边，8px 外圆角裁切表头底色 */
 .ke-card--table {
@@ -98,7 +97,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
 
 /* 键盘可达：统一的 focus 可见环（无障碍） */
 :focus-visible {
-  outline: 2px solid var(--ke-brand-500);
+  outline: 2px solid var(--ke-brand-400);
   outline-offset: 2px;
 }
 
@@ -131,7 +130,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
   box-shadow: none;
 
   // 悬停：轻阴影加深，替代强渐变
-  &:hover { box-shadow: 0 2px 8px rgba(47, 111, 237, 0.18); }
+  &:hover { box-shadow: var(--ke-shadow-brand); }
 }
 // 次按钮：白底浅蓝边，悬停时描边转蓝（排除主色/警示类与纯文字按钮）
 .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--warning):not(.el-button--success):not(.el-button--info):not(.is-link):not(.is-text) {
@@ -142,7 +141,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
     border-color: var(--ke-brand-200);
     background: var(--ke-brand-50);
     color: var(--ke-brand-700);
-    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+    box-shadow: var(--ke-shadow-sm);
   }
 }
 .el-button.is-link {
@@ -167,16 +166,17 @@ a { color: var(--ke-brand-500); text-decoration: none; }
 .el-select__wrapper.is-focused,
 .el-textarea__inner:focus {
   box-shadow: 0 0 0 1px var(--ke-brand-400) inset,
-              0 0 0 3px rgba(47, 111, 237, 0.12);
+              0 0 0 3px var(--ke-ring);
 }
 
 /* 表格：极浅蓝表头、行高舒展、斑马纹 + 轻量 hover，仅保留横向分割细线 */
 .el-table {
-  --el-table-border-color: #eef1f7;
-  --el-table-header-bg-color: #f7faff;
-  --el-table-header-text-color: #444;
-  --el-table-row-hover-bg-color: #f2f7ff;
-  --el-table-text-color: #4a5568;
+  --el-table-border-color: var(--ke-gray-100);
+  --el-table-header-bg-color: var(--ke-gray-50);
+  --el-table-header-text-color: var(--ke-gray-700);
+  --el-table-row-hover-bg-color: var(--ke-bg-hover);
+  --el-table-text-color: var(--ke-gray-600);
+  background-color: var(--ke-bg-card);
   font-size: 13px;
 
   th.el-table__cell {
@@ -190,7 +190,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
     vertical-align: middle;
     border-bottom: 1px solid var(--ke-gray-100);
   }
-  .el-table__row--striped td.el-table__cell { background: #fbfcfe; }
+  .el-table__row--striped td.el-table__cell { background: var(--ke-gray-25); }
   .el-table__inner-wrapper::before { display: none; }
   /* 单元格内层不再叠加 12px 内边距，避免窄列被挤压后出现省略号 */
   .cell { padding: 0; }
@@ -231,7 +231,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
 
 /* 分页：统一细边框页码，当前页浅蓝底 */
 .el-pagination {
-  --el-pagination-button-bg-color: #fff;
+  --el-pagination-button-bg-color: var(--ke-bg-card);
   --el-pagination-hover-color: var(--ke-brand-600);
   gap: var(--ke-space-1);
 
@@ -245,7 +245,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
     margin: 0 2px;
     border: 1px solid var(--ke-gray-200);
     border-radius: var(--ke-radius-sm);
-    background: #fff;
+    background: var(--ke-bg-card);
     font-weight: 500;
   }
   .el-pager li.is-active {
@@ -257,7 +257,7 @@ a { color: var(--ke-brand-500); text-decoration: none; }
   button.btn-prev {
     border: 1px solid var(--ke-gray-200);
     border-radius: var(--ke-radius-sm);
-    background: #fff;
+    background: var(--ke-bg-card);
   }
 }
 
