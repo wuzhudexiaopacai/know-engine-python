@@ -40,10 +40,10 @@ onMounted(() => {
     transform-origin: left center;
     background: linear-gradient(
       90deg,
-      var(--ke-brand-400),
-      #6fd3e8 35%,
-      #a99bf5 65%,
-      var(--ke-brand-400)
+      var(--ke-brand-500),
+      var(--ke-brand-400) 35%,
+      var(--ke-brand-600) 65%,
+      var(--ke-brand-500)
     );
     background-size: 200% 100%;
     animation: app-loader-run 1.2s var(--ke-ease-out) forwards,

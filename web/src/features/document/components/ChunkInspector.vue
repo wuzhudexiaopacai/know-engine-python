@@ -149,8 +149,8 @@ function barClass(v: number): string {
   &__bar-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 52px; }
   &__bar-track { position: relative; width: 100%; height: 4px; background: var(--ke-gray-200); border-radius: 2px; overflow: hidden; }
   &__bar { position: absolute; top: 0; height: 100%; border-radius: 2px; }
-  &__bar.pos { left: 50%; background: #2563eb; }
-  &__bar.neg { right: 50%; background: #ef4444; }
+  &__bar.pos { left: 50%; background: var(--ke-brand-500); }
+  &__bar.neg { right: 50%; background: var(--ke-danger); }
   &__bar-value { font-size: 10px; color: var(--ke-gray-500); font-family: monospace; }
   &__hint { margin: var(--ke-space-2) 0 0; font-size: 12px; }
   &__pager { display: flex; justify-content: flex-end; margin-top: var(--ke-space-3); }

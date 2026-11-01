@@ -276,7 +276,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
   &__step {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 10px; border-radius: 999px;
-    background: #fff; border: 1px solid var(--ke-gray-200);
+    background: var(--ke-bg-card); border: 1px solid var(--ke-gray-200);
     font-size: 12px; color: var(--ke-gray-700);
 
     b {

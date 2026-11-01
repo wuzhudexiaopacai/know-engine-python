@@ -222,7 +222,7 @@ async function openReference(r: RagReference): Promise<void> {
     flex: 0 0 auto;
     width: 32px; height: 32px; border-radius: var(--ke-radius-sm);
     background: var(--ke-brand-500);
-    color: #fff;
+    color: var(--ke-on-brand);
     display: grid; place-items: center; font-weight: 600; font-size: 14px;
   }
 
@@ -291,7 +291,7 @@ async function openReference(r: RagReference): Promise<void> {
   }
   &__stop {
     margin-left: var(--ke-space-2); display: inline-flex; align-items: center; gap: 2px;
-    border: 1px solid var(--ke-gray-200); background: #fff; color: var(--ke-gray-600);
+    border: 1px solid var(--ke-gray-200); background: var(--ke-bg-card); color: var(--ke-gray-600);
     border-radius: var(--ke-radius-sm); padding: 2px 8px; font-size: 12px; cursor: pointer;
     transition: border-color var(--ke-duration-fast), color var(--ke-duration-fast);
     &:hover { border-color: var(--ke-danger); color: var(--ke-danger); }
@@ -335,8 +335,8 @@ async function openReference(r: RagReference): Promise<void> {
 
   &__error {
     display: flex; align-items: center; gap: 6px; font-size: 13px;
-    color: var(--ke-danger); background: var(--ke-danger-50, #fef2f2);
-    border: 1px solid #fecaca; border-radius: var(--ke-radius-sm); padding: 6px 10px;
+    color: var(--ke-danger); background: var(--ke-danger-50);
+    border: 1px solid var(--ke-danger-border); border-radius: var(--ke-radius-sm); padding: 6px 10px;
   }
   &__retry {
     margin-left: auto; border: 1px solid currentColor; background: transparent;
@@ -347,7 +347,7 @@ async function openReference(r: RagReference): Promise<void> {
   &__feedback { display: flex; align-items: center; gap: var(--ke-space-2); }
   &__fb-btn {
     display: inline-flex; align-items: center; gap: 4px;
-    border: 1px solid var(--ke-gray-200); background: #fff; color: var(--ke-gray-500);
+    border: 1px solid var(--ke-gray-200); background: var(--ke-bg-card); color: var(--ke-gray-500);
     border-radius: var(--ke-radius-sm); padding: 3px 10px; font-size: 12px; cursor: pointer;
     &:hover { border-color: var(--ke-brand-400); color: var(--ke-brand-600); }
   }

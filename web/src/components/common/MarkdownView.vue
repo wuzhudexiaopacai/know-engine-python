@@ -252,7 +252,7 @@ async function onCopyClick(e: MouseEvent) {
   :deep(th), :deep(td) {
     border: 1px solid var(--ke-gray-200); padding: 4px 10px; text-align: left;
   }
-  :deep(th) { background: #f3f8ff; font-weight: 600; }
+  :deep(th) { background: var(--ke-gray-50); font-weight: 600; }
   :deep(a) { color: var(--ke-brand-600); text-decoration: none; }
   :deep(a:hover) { text-decoration: underline; }
   :deep(hr) { border: none; border-top: 1px solid var(--ke-gray-200); margin: 0.7em 0; }
@@ -260,11 +260,11 @@ async function onCopyClick(e: MouseEvent) {
   :deep(img) { max-width: 100%; }
   // Mermaid 图表：白底卡片 + 超宽图表横向滚动
   :deep(.md__mermaid) {
-    margin: 0.6em 0; padding: 10px; background: #fff;
+    margin: 0.6em 0; padding: 10px; background: var(--ke-diagram-bg);
     border: 1px solid var(--ke-gray-200); border-radius: var(--ke-radius-sm);
     overflow-x: auto; text-align: center;
   }
   :deep(.md__mermaid svg) { max-width: 100%; height: auto; }
-  :deep(.md__mermaid-error) { color: #dc2626; font-size: 12px; margin-bottom: 6px; text-align: left; }
+  :deep(.md__mermaid-error) { color: var(--ke-danger); font-size: 12px; margin-bottom: 6px; text-align: left; }
 }
 </style>

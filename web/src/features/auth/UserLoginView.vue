@@ -146,8 +146,8 @@ async function submit(): Promise<void> {
   &__hero {
     position: relative;
     overflow: hidden;
-    background: linear-gradient(160deg, #4a86f7, #2f6fed 62%, #1f5ed6);
-    color: #fff;
+    background: linear-gradient(160deg, var(--ke-login-hero-1), var(--ke-login-hero-2) 62%, var(--ke-login-hero-3));
+    color: var(--ke-on-brand);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -179,7 +179,7 @@ async function submit(): Promise<void> {
       display: flex; align-items: center; gap: var(--ke-space-3);
       font-size: 13px; opacity: 0.86;
     }
-    .el-icon { color: #d6e4ff; }
+    .el-icon { color: var(--ke-login-hero-fg); }
   }
 
   &__panel {
@@ -188,7 +188,7 @@ async function submit(): Promise<void> {
   }
   &__card {
     width: 100%; max-width: 380px;
-    background: #fff; border: 1px solid var(--ke-gray-200);
+    background: var(--ke-bg-card); border: 1px solid var(--ke-gray-200);
     border-radius: var(--ke-radius-lg); box-shadow: var(--ke-shadow-sm);
     padding: var(--ke-space-8);
   }
@@ -219,7 +219,7 @@ async function submit(): Promise<void> {
   &__submit {
     width: 100%; margin-top: var(--ke-space-2);
     transition: box-shadow var(--ke-duration-fast), transform var(--ke-duration-fast);
-    &:hover { box-shadow: 0 3px 10px rgba(47, 111, 237, 0.20); }
+    &:hover { box-shadow: var(--ke-shadow-brand); }
     &:active { transform: scale(0.98); }
   }
   &__foot {

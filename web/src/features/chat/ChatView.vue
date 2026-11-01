@@ -702,7 +702,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   &__main {
     position: relative;
     flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
-    background: #fff;
+    background: var(--ke-bg-card);
   }
 
   // overflow-x: hidden：兜底裁掉横向溢出，横向滚动条只出现在代码块内部
@@ -718,7 +718,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   &__welcome-sub { margin: 0 0 var(--ke-space-5); font-size: 13px; color: var(--ke-gray-500); }
   &__chips { display: flex; flex-wrap: wrap; gap: var(--ke-space-2); justify-content: center; }
   &__chip {
-    border: 1px solid var(--ke-brand-100); background: #fff; color: var(--ke-gray-700);
+    border: 1px solid var(--ke-brand-100); background: var(--ke-bg-card); color: var(--ke-gray-700);
     border-radius: 999px; padding: 6px 14px; font-size: 13px; cursor: pointer;
     transition: border-color var(--ke-duration-fast), color var(--ke-duration-fast),
                 background var(--ke-duration-fast);
@@ -737,7 +737,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     position: relative;
     max-width: 780px; margin: 0 auto; padding: var(--ke-space-2) var(--ke-space-3);
     border-radius: var(--ke-radius-md);
-    background: #fff;
+    background: var(--ke-bg-card);
     transition: border-color var(--ke-duration-fast), background-color var(--ke-duration-fast),
                 box-shadow var(--ke-duration-fast);
     :deep(.el-textarea__inner) {
@@ -747,8 +747,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     // 聚焦：蓝色描边 + 背景轻微提亮
     &:focus-within {
       border-color: var(--ke-brand-400);
-      background: #fcfdff;
-      box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.10);
+      background: var(--ke-bg-elevated);
+      box-shadow: 0 0 0 3px var(--ke-ring);
     }
   }
   // 隐藏原生文件选择器，由回形针按钮触发
@@ -770,7 +770,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
     display: grid; place-items: center; padding: 0;
     border: none; border-radius: 50%; cursor: pointer;
-    background: rgba(17, 24, 39, 0.62); color: #fff; font-size: 12px;
+    background: rgba(17, 24, 39, 0.62); color: var(--ke-on-brand); font-size: 12px;
     transition: background var(--ke-duration-fast), transform var(--ke-duration-fast);
     &:hover { background: rgba(17, 24, 39, 0.85); transform: scale(1.06); }
   }
@@ -806,7 +806,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     transform-origin: bottom left;
     min-width: 200px; max-height: 240px; overflow-y: auto;
     margin: 0; padding: 4px; list-style: none;
-    background: #fff; border: 1px solid var(--ke-brand-100);
+    background: var(--ke-bg-elevated); border: 1px solid var(--ke-brand-100);
     border-radius: var(--ke-radius-md); box-shadow: var(--ke-shadow-md);
   }
   &__model-option {
@@ -828,14 +828,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   &__mic {
     width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
     display: inline-grid; place-items: center;
-    border: 1px solid var(--ke-gray-200); background: #fff; color: var(--ke-gray-600);
+    border: 1px solid var(--ke-gray-200); background: var(--ke-bg-card); color: var(--ke-gray-600);
     transition: border-color var(--ke-duration-base), color var(--ke-duration-base),
                 background var(--ke-duration-base);
     &:hover:not(:disabled) { border-color: var(--ke-brand-400); color: var(--ke-brand-600); }
     &:disabled { cursor: not-allowed; opacity: 0.5; }
     &.is-recording {
-      background: var(--ke-danger); border-color: var(--ke-danger); color: #fff;
-      box-shadow: 0 0 0 3px rgba(178, 59, 59, 0.15);
+      background: var(--ke-danger); border-color: var(--ke-danger); color: var(--ke-on-brand);
+      box-shadow: 0 0 0 3px var(--ke-ring-danger);
     }
   }
   &__disclaimer { text-align: center; font-size: 12px; margin: var(--ke-space-2) 0 0; }
@@ -848,7 +848,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .chat__image-label { font-size: 13px; color: var(--ke-gray-500); }
 .chat__image-error {
   margin: var(--ke-space-3) 0 0; font-size: 13px; color: var(--ke-danger);
-  background: rgba(178, 59, 59, 0.06); border-radius: var(--ke-radius-sm, 6px);
+  background: var(--ke-danger-50); border-radius: var(--ke-radius-sm, 6px);
   padding: 6px 10px;
 }
 
@@ -869,7 +869,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 // 流式生成中：输入卡片仅加强描边，表达“处理中”而不干扰阅读
 .chat__main.is-streaming .chat__composer-inner {
   border-color: var(--ke-brand-400);
-  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.10);
+  box-shadow: 0 0 0 3px var(--ke-ring);
 }
 
 @media (max-width: 720px) {

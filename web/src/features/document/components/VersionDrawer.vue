@@ -263,7 +263,7 @@ async function submitResplit(): Promise<void> {
   &__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ke-space-3); }
   &__item {
     border: 1px solid var(--ke-gray-200); border-radius: var(--ke-radius-md);
-    padding: var(--ke-space-3) var(--ke-space-4); background: #fff;
+    padding: var(--ke-space-3) var(--ke-space-4); background: var(--ke-bg-card);
     &.is-current { border-color: var(--ke-brand-400); box-shadow: var(--ke-shadow-sm); }
   }
   &__row { display: flex; align-items: center; justify-content: space-between; }

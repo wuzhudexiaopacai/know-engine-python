@@ -149,7 +149,7 @@ function openExternal(): void {
     padding: var(--ke-space-3) var(--ke-space-4);
     border: 1px solid var(--ke-gray-200);
     border-radius: var(--ke-radius-md);
-    background: #fff;
+    background: var(--ke-bg-card);
   }
   &__sheet {
     display: flex; flex-direction: column; gap: var(--ke-space-2);
@@ -160,7 +160,7 @@ function openExternal(): void {
     overflow: auto;
     border: 1px solid var(--ke-gray-200);
     border-radius: var(--ke-radius-md);
-    background: #fff;
+    background: var(--ke-bg-card);
     table {
       width: 100%;
       border-collapse: collapse;
@@ -177,11 +177,11 @@ function openExternal(): void {
       }
       th {
         position: sticky; top: 0; z-index: 1;
-        background: #f3f8ff;
+        background: var(--ke-gray-50);
         color: var(--ke-brand-700);
         font-weight: 600;
       }
-      tbody tr:hover td { background: #f7faff; }
+      tbody tr:hover td { background: var(--ke-bg-hover); }
       .pv__idx {
         width: 48px;
         color: var(--ke-gray-500);
