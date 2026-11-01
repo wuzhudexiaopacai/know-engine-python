@@ -53,6 +53,22 @@ _LIST_RE = re.compile(r"^(?:[-*+]\s|[0-9]+[.、)]\s)")
 # 句末标点：命中即视为自然段结束
 _SENT_END = ("。", "！", "？", "；", "：", ".", "!", "?", ";", ":", "…")
 _FENCE_RE = re.compile(r"^(```|~~~)")
+# ASCII 字符画（框线/制表符）：这些行不能被 reflow 合并换行，否则对齐全毁
+_BOX_CHARS = set("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┏┓┗┛┣┫┳┻╋·•")
+
+
+def _is_box_art(line: str) -> bool:
+    """是否为 ASCII 字符画行（含框线字符，且不以句末标点结束）。
+
+    阈值放低到 2 个框线字符，因为 `│ Gateway │` 这类行只有 2 个竖线。
+    句末标点结尾的行（如表格说明文字）不视为字符画，避免误包。
+    """
+    s = line.strip()
+    if len(s) < 4:
+        return False
+    if s.endswith(_SENT_END):
+        return False
+    return sum(1 for c in s if c in _BOX_CHARS) >= 2
 
 
 class MarkdownHeaderSplitter:
@@ -93,16 +109,25 @@ class MarkdownHeaderSplitter:
         """PDF 转换产物常把一句话硬断成多行且没有空行，导致整篇成为一个大块。
 
         这里把"未以句末标点结束"的连续行合并成自然段，标题/列表/表格/代码保持独立。
+        ASCII 字符画（框线图）单独用代码块包裹，保留换行与空格对齐。
         已有良好空行分段的 Markdown 不受影响（空行仍触发 flush）。
         """
         out: list[str] = []
         buf: list[str] = []
         in_fence = False
+        box_buf: list[str] = []      # 连续的 ASCII 字符画行
 
         def flush():
             if buf:
                 out.append("".join(buf))
                 buf.clear()
+
+        def flush_box():
+            if box_buf:
+                out.append("```")
+                out.extend(box_buf)
+                out.append("```")
+                box_buf.clear()
 
         def append_piece(piece: str):
             if buf and (buf[-1][-1:].isascii() or piece[:1].isascii()):
@@ -113,6 +138,7 @@ class MarkdownHeaderSplitter:
             s = line.strip()
             if _FENCE_RE.match(s):
                 flush()
+                flush_box()
                 out.append(line)
                 in_fence = not in_fence
                 continue
@@ -121,8 +147,15 @@ class MarkdownHeaderSplitter:
                 continue
             if not s:
                 flush()
+                flush_box()
                 out.append("")
                 continue
+            if _is_box_art(s):
+                flush()                       # 普通段落先结束
+                box_buf.append(line)         # 保留原始行（含前导空格）
+                continue
+            if box_buf:                     # 字符画结束，先输出代码块
+                flush_box()
             if (self._heading_of(s) is not None or s.startswith("|")
                     or _LIST_RE.match(s)):
                 flush()
@@ -132,6 +165,7 @@ class MarkdownHeaderSplitter:
             if s.endswith(_SENT_END):
                 flush()
         flush()
+        flush_box()
         return "\n".join(out)
 
     @staticmethod
