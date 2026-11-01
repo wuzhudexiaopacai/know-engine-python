@@ -11,7 +11,9 @@ PROVIDER_PATTERN = "^(aliyun|zhipu|bailian|openai|local|custom)$"
 # 用途枚举（模型能力类型）：决定该模型可被哪些系统用途（角色）选用
 # chat=对话；vision=图片理解；speech=语音识别；embedding=向量化；
 # rerank=精排；image_gen=文生图
-PURPOSE_PATTERN = "^(chat|vision|speech|embedding|rerank|image_gen)$"
+# 支持逗号分隔多值，如 'chat,vision'
+_PURPOSE_ITEM = r"(chat|vision|speech|embedding|rerank|image_gen)"
+PURPOSE_PATTERN = rf"^{_PURPOSE_ITEM}(,{_PURPOSE_ITEM})*$"
 
 
 class ModelSaveRequest(BaseModel):
@@ -27,6 +29,7 @@ class ModelSaveRequest(BaseModel):
     enabled: bool = True
     sort: int = Field(default=0, ge=0, le=999)
     remark: str | None = Field(default=None, max_length=512)
+    supports_vision: bool = Field(default=False, description="是否支持图片输入（多模态）")
 
 
 class ModelVO(BaseModel):
@@ -44,6 +47,7 @@ class ModelVO(BaseModel):
     enabled: int
     sort: int
     remark: str | None = None
+    supports_vision: int = 0
     lock_version: int
     updated_at: datetime
 

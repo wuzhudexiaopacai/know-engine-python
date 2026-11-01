@@ -92,7 +92,7 @@ const purposeTagType = (v: string): 'primary' | 'success' | 'warning' | 'info' |
 } as const)[v] ?? 'info'
 
 const form = reactive<ModelSavePayload>({
-  purpose: 'chat',
+  purpose: ['chat'],
   provider: 'aliyun',
   display_name: '',
   model_name: '',
@@ -102,6 +102,7 @@ const form = reactive<ModelSavePayload>({
   enabled: true,
   sort: 0,
   remark: '',
+  supports_vision: false,
 })
 
 const dialogTitle = computed(() => (editingId.value ? '编辑模型配置' : '新增模型配置'))
@@ -138,7 +139,7 @@ async function onBindRole(role: ModelRoleVO, modelId: number | null | undefined)
 }
 
 function resetForm(): void {
-  form.purpose = 'chat'
+  form.purpose = ['chat']
   form.provider = 'aliyun'
   form.display_name = ''
   form.model_name = ''
@@ -148,6 +149,7 @@ function resetForm(): void {
   form.enabled = true
   form.sort = 0
   form.remark = ''
+  form.supports_vision = false
 }
 
 function openCreate(): void {
@@ -161,7 +163,7 @@ function openCreate(): void {
 function openEdit(row: ModelVO): void {
   editingId.value = row.id
   lockVersion.value = row.lock_version
-  form.purpose = row.purpose || 'chat'
+  form.purpose = (row.purpose || 'chat').split(',').map((s) => s.trim()).filter(Boolean)
   form.provider = row.provider
   form.display_name = row.display_name
   form.model_name = row.model_name
@@ -171,6 +173,7 @@ function openEdit(row: ModelVO): void {
   form.enabled = row.enabled === 1
   form.sort = row.sort
   form.remark = row.remark ?? ''
+  form.supports_vision = row.supports_vision === 1
   dialogOpen.value = true
 }
 
@@ -191,6 +194,7 @@ async function save(): Promise<void> {
     model_name: form.model_name.trim(),
     base_url: form.base_url.trim(),
     api_key: form.api_key.trim(),
+    purpose: (form.purpose as string[]).join(','),
     remark: form.remark?.trim() || null,
   }
   try {
@@ -237,7 +241,7 @@ async function runTest(): Promise<void> {
       base_url: form.base_url.trim(),
       model_name: form.model_name.trim(),
       api_key: form.api_key.trim(),
-      purpose: form.purpose,
+      purpose: (form.purpose as string[]).join(','),
     }
     const res = await testModel(payload)
     if (res.ok) {
@@ -324,10 +328,17 @@ onMounted(load)
           </template>
         </el-table-column>
 
-        <el-table-column label="用途" width="120">
+        <el-table-column label="用途" min-width="160">
           <template #default="{ row }">
-            <el-tag size="small" effect="light" :type="purposeTagType(row.purpose)">
-              {{ purposeLabel(row.purpose) }}
+            <el-tag
+              v-for="p in (row.purpose || 'chat').split(',')"
+              :key="p"
+              size="small"
+              effect="light"
+              :type="purposeTagType(p.trim())"
+              style="margin-right: 4px; margin-bottom: 2px"
+            >
+              {{ purposeLabel(p.trim()) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -390,18 +401,23 @@ onMounted(load)
 
     <el-dialog v-model="dialogOpen" :title="dialogTitle" width="min(640px, 94vw)" append-to-body>
       <el-form :model="form" label-position="top">
-        <el-form-item label="用途">
-          <el-select v-model="form.purpose" class="model__full">
-            <el-option
+        <el-form-item label="用途（可多选）">
+          <el-checkbox-group v-model="(form.purpose as string[])" class="model__purpose-group">
+            <el-checkbox
               v-for="p in PURPOSES"
               :key="p.value"
-              :label="`${p.label}（${p.hint}）`"
               :value="p.value"
-            />
-          </el-select>
-          <p v-if="form.purpose === 'vision'" class="model__tip">
-            必须是支持图片输入的视觉模型（如 qwen-vl-plus / glm-4v-flash / llava / moondream）；
-            纯文本模型（如 qwen2.5:3b-instruct）会返回「不支持多模态」而无法生成描述。
+            >
+              <span class="model__purpose-label">{{ p.label }}</span>
+              <span class="model__purpose-hint">{{ p.hint }}</span>
+            </el-checkbox>
+          </el-checkbox-group>
+          <p class="model__tip">
+            一个模型可同时勾选多种能力（如 qwen3.6 可同时做对话、图片理解、文生图）；
+            专用模型（如 embedding / rerank）通常只勾选一项。
+          </p>
+          <p v-if="form.purpose.includes('vision')" class="model__tip">
+            勾选「图片理解」时，该模型必须支持图片输入（如 qwen3.6-vl / glm-4v / llava）。
           </p>
         </el-form-item>
         <el-form-item label="供应商">
@@ -441,6 +457,12 @@ onMounted(load)
         <el-form-item label="备注">
           <el-input v-model="form.remark" maxlength="512" placeholder="可选，仅后台可见" />
         </el-form-item>
+        <el-form-item label="支持图片输入">
+          <el-switch v-model="form.supports_vision" />
+          <span class="model__tip" style="margin-left: 12px">
+            开启后，RAG 检索到含图片的文档时会把图片发给该模型阅读；不开启则只传文字描述，避免模型不支持 image_url 报错。
+          </span>
+        </el-form-item>
         <div class="model__test">
           <el-button :loading="testing" @click="runTest">测试连通性</el-button>
           <el-button @click="applyProviderDefaults">回填默认值</el-button>
@@ -475,6 +497,14 @@ onMounted(load)
   &__full { width: 100%; }
   &__row { display: flex; align-items: flex-end; gap: var(--ke-space-6); flex-wrap: wrap; }
   &__test { display: flex; align-items: center; gap: var(--ke-space-3); }
+
+  &__purpose-group {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px;
+  }
+  &__purpose-label { font-weight: 500; color: var(--ke-gray-800); }
+  &__purpose-hint {
+    display: block; font-size: 11px; color: var(--ke-gray-400); margin-top: 2px;
+  }
 
   &__roles { margin-bottom: var(--ke-space-5); padding: var(--ke-space-5); }
   &__roles-head { margin-bottom: var(--ke-space-4); }

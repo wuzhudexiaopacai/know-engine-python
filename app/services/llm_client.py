@@ -45,16 +45,20 @@ def _is_retryable(exc: BaseException) -> bool:
 
 class LlmClient:
     def __init__(self, *, base_url: str | None = None, api_key: str | None = None,
-                 chat_model: str | None = None, allow_empty_key: bool = False):
+                 chat_model: str | None = None, allow_empty_key: bool = False,
+                 supports_vision: bool = False):
         """默认从环境变量配置构造；传入覆盖项则指向管理员配置的某个模型。
 
         allow_empty_key 用于本地部署（Ollama/vLLM）等无需鉴权的端点。
+        supports_vision 标记该对话模型是否支持图片输入（多模态），
+        决定 RAG 生成时是否把文档图片作为 image_url 传入。
         """
         cfg = get_settings().llm
         self.cfg = cfg
         self._base = (base_url or cfg.base_url).rstrip("/")
         self._api_key = api_key if api_key is not None else cfg.api_key
         self._allow_empty_key = allow_empty_key
+        self.supports_vision = supports_vision
         self.chat_model = chat_model or cfg.chat_model
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(cfg.timeout_seconds, connect=10.0),
@@ -253,13 +257,14 @@ def get_llm() -> LlmClient:
 
 def get_model_llm(model_id: int, lock_version: int, base_url: str,
                   api_key: str, chat_model: str,
-                  allow_empty_key: bool = False) -> LlmClient:
+                  allow_empty_key: bool = False,
+                  supports_vision: bool = False) -> LlmClient:
     """按管理员配置的模型构造客户端（同一模型复用连接池，配置变更后自动换新）。"""
     cached = _dynamic_clients.get(model_id)
     if cached is not None and cached[0] == lock_version:
         return cached[1]
     client = LlmClient(base_url=base_url, api_key=api_key, chat_model=chat_model,
-                       allow_empty_key=allow_empty_key)
+                       allow_empty_key=allow_empty_key, supports_vision=supports_vision)
     _dynamic_clients[model_id] = (lock_version, client)
     return client
 

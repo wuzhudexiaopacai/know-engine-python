@@ -37,11 +37,12 @@ _TEST_IMAGE_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8
 # 运行期模型描述：供 LLM 客户端按需构造（含明文密钥，仅在进程内流转）
 class ModelRuntime:
     __slots__ = ("id", "display_name", "model_name", "base_url", "api_key",
-                 "lock_version", "allow_empty_key", "provider")
+                 "lock_version", "allow_empty_key", "provider", "supports_vision")
 
     def __init__(self, id: int, display_name: str, model_name: str,
                  base_url: str, api_key: str, lock_version: int,
-                 allow_empty_key: bool = False, provider: str = "custom"):
+                 allow_empty_key: bool = False, provider: str = "custom",
+                 supports_vision: bool = False):
         self.id = id
         self.display_name = display_name
         self.model_name = model_name
@@ -50,6 +51,7 @@ class ModelRuntime:
         self.lock_version = lock_version
         self.allow_empty_key = allow_empty_key
         self.provider = provider
+        self.supports_vision = supports_vision
 
     @classmethod
     def from_env(cls) -> "ModelRuntime":
@@ -89,7 +91,8 @@ def _to_vo(m: LlmModel) -> ModelVO:
         model_name=m.model_name, base_url=m.base_url,
         api_key_masked=_mask(m.api_key or ""), has_api_key=bool(m.api_key),
         is_default=m.is_default, enabled=m.enabled, sort=m.sort,
-        remark=m.remark, lock_version=m.lock_version, updated_at=m.updated_at,
+        remark=m.remark, supports_vision=m.supports_vision,
+        lock_version=m.lock_version, updated_at=m.updated_at,
     )
 
 
@@ -102,12 +105,12 @@ async def list_models() -> list[ModelVO]:
 
 
 async def public_models() -> list[PublicModelVO]:
-    """用户端可选模型：只列出启用且用途为对话的模型；库里为空时回退到环境变量默认模型。"""
+    """用户端可选模型：只列出启用且支持对话用途的模型；库里为空时回退到环境变量默认模型。"""
     async with session_scope() as session:
         rows = (await session.execute(
-            base_filter(LlmModel).where(LlmModel.enabled == 1,
-                                        LlmModel.purpose == "chat")
+            base_filter(LlmModel).where(LlmModel.enabled == 1)
             .order_by(LlmModel.is_default.desc(), LlmModel.sort, LlmModel.id))).scalars().all()
+    rows = [r for r in rows if _has_purpose(r, "chat")]
     if not rows:
         cfg = get_settings().llm
         if cfg.api_key:
@@ -163,14 +166,27 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
 def runtime_of(row: LlmModel) -> ModelRuntime:
     return ModelRuntime(row.id, row.display_name, row.model_name,
                         row.base_url, row.api_key or "", row.lock_version,
-                        _is_local_endpoint(row.provider, row.base_url), row.provider)
+                        _is_local_endpoint(row.provider, row.base_url), row.provider,
+                        bool(getattr(row, "supports_vision", 0)))
+
+
+def _purposes(row: LlmModel) -> set[str]:
+    """解析模型支持的用途集合：purpose 字段存逗号分隔的多值，如 'chat,vision'。"""
+    return {p.strip() for p in (row.purpose or "chat").split(",") if p.strip()}
+
+
+def _has_purpose(row: LlmModel, purpose: str) -> bool:
+    return purpose in _purposes(row)
 
 
 async def _enabled_by_purpose(session, purpose: str) -> LlmModel | None:
-    return (await session.execute(
-        base_filter(LlmModel).where(LlmModel.enabled == 1, LlmModel.purpose == purpose)
-        .order_by(LlmModel.is_default.desc(), LlmModel.sort, LlmModel.id)
-        .limit(1))).scalars().first()
+    rows = (await session.execute(
+        base_filter(LlmModel).where(LlmModel.enabled == 1)
+        .order_by(LlmModel.is_default.desc(), LlmModel.sort, LlmModel.id))).scalars().all()
+    for r in rows:
+        if _has_purpose(r, purpose):
+            return r
+    return None
 
 
 async def resolve_runtime(model_id: int | None) -> ModelRuntime:
@@ -264,7 +280,7 @@ async def list_roles() -> list[ModelRoleVO]:
 
     result: list[ModelRoleVO] = []
     for role, spec in ROLE_SPECS.items():
-        candidates = [r for r in rows if r.purpose == spec["capability"]]
+        candidates = [r for r in rows if _has_purpose(r, spec["capability"])]
         bound_id = bindings.get(role)
         bound = rows_by_id.get(bound_id) if bound_id else None
         result.append(ModelRoleVO(
@@ -294,7 +310,7 @@ async def bind_role(role: str, model_id: int | None) -> None:
                 raise ParamError("所选模型不存在或已被删除")
             if row.enabled != 1:
                 raise ParamError("所选模型已停用")
-            if (row.purpose or "chat") != spec["capability"]:
+            if not _has_purpose(row, spec["capability"]):
                 raise ParamError("该模型的能力类型与用途不匹配，请选择对应用途的模型")
         binding = (await session.execute(
             base_filter(ModelRoleBinding).where(ModelRoleBinding.role == role)
@@ -306,13 +322,21 @@ async def bind_role(role: str, model_id: int | None) -> None:
     logger.info("role_bound", role=role, model_id=model_id)
 
 
-async def _clear_other_defaults(session, keep_id: int | None, purpose: str = "chat") -> None:
-    """默认模型按用途分别唯一：对话模型和图片理解模型可以各自有一个默认。"""
-    stmt = update(LlmModel).where(LlmModel.deleted == 0, LlmModel.is_default == 1,
-                                  LlmModel.purpose == purpose)
-    if keep_id is not None:
-        stmt = stmt.where(LlmModel.id != keep_id)
-    await session.execute(stmt.values(is_default=0))
+async def _clear_other_defaults(session, keep_id: int | None, purpose: str) -> None:
+    """默认模型按用途分别唯一：含该 purpose 的其他模型取消默认标记。
+
+    purpose 可能是逗号分隔的多值（如 'chat,vision'），逐个清除。
+    """
+    targets = {p.strip() for p in purpose.split(",") if p.strip()}
+    if not targets:
+        return
+    rows = (await session.execute(
+        base_filter(LlmModel).where(LlmModel.is_default == 1))).scalars().all()
+    for r in rows:
+        if keep_id is not None and r.id == keep_id:
+            continue
+        if _purposes(r) & targets:
+            r.is_default = 0
 
 
 async def create_model(req: ModelSaveRequest) -> ModelVO:
@@ -325,6 +349,7 @@ async def create_model(req: ModelSaveRequest) -> ModelVO:
             model_name=req.model_name, base_url=req.base_url.rstrip("/"),
             api_key=req.api_key, is_default=1 if req.is_default else 0,
             enabled=1 if req.enabled else 0, sort=req.sort, remark=req.remark,
+            supports_vision=1 if req.supports_vision else 0,
         )
         session.add(row)
         await session.flush()
@@ -349,6 +374,7 @@ async def update_model(model_id: int, req: ModelSaveRequest, lock_version: int) 
             "is_default": 1 if req.is_default else 0,
             "enabled": 1 if req.enabled else 0,
             "sort": req.sort, "remark": req.remark,
+            "supports_vision": 1 if req.supports_vision else 0,
         }
         # 留空表示沿用旧密钥，避免编辑表单回显明文
         if req.api_key:
@@ -387,13 +413,15 @@ async def test_connection(req: ModelTestRequest) -> ModelTestResult:
                                message="未配置 API Key（本地部署可留空）")
 
     # 非对话类模型走各自协议的最小请求（对话端点对它们必然 400/404）
-    if req.purpose == "embedding":
+    # purpose 可能是逗号分隔的多值，取第一个匹配项决定测试方式
+    purposes = {p.strip() for p in (req.purpose or "chat").split(",") if p.strip()}
+    if "embedding" in purposes:
         return await _test_embedding(req, api_key)
-    if req.purpose == "rerank":
+    if "rerank" in purposes:
         return await _test_rerank(req, api_key)
-    if req.purpose == "speech":
+    if "speech" in purposes:
         return await _test_speech(req, api_key)
-    if req.purpose == "image_gen":
+    if purposes == {"image_gen"}:
         return ModelTestResult(ok=True, latency_ms=0,
                                message="文生图需真实生成才能验证，请保存后在对话页实测")
 
@@ -402,7 +430,7 @@ async def test_connection(req: ModelTestRequest) -> ModelTestResult:
     timeout = httpx.Timeout(60.0, connect=8.0) if allow_empty else httpx.Timeout(15.0, connect=8.0)
     # 图片理解用途额外带一张 1x1 图：纯文本模型会直接 400，模型名不存在会 404
     content: object = "ping"
-    if req.purpose == "vision":
+    if "vision" in purposes:
         content = [
             {"type": "text", "text": "描述这张图片"},
             {"type": "image_url", "image_url": {
@@ -419,7 +447,7 @@ async def test_connection(req: ModelTestRequest) -> ModelTestResult:
             )
         elapsed = int((time.perf_counter() - started) * 1000)
         if resp.status_code == 200:
-            msg = "连通正常（已通过图片输入校验）" if req.purpose == "vision" else "连通正常"
+            msg = "连通正常（已通过图片输入校验）" if "vision" in purposes else "连通正常"
             return ModelTestResult(ok=True, latency_ms=elapsed, message=msg)
         detail = resp.text[:300].replace("\n", " ")
         return ModelTestResult(ok=False, latency_ms=elapsed,

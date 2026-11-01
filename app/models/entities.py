@@ -195,8 +195,9 @@ class LlmModel(Base, AuditMixin):
     __tablename__ = "llm_model"
 
     id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    # 用途：chat=对话模型（用户可选）；vision=图片理解（文档解析时自动调用，建议配轻量模型）
-    purpose: Mapped[str] = mapped_column(String(32), default="chat")
+    # 用途：逗号分隔的多值，如 'chat,vision'；一个模型可同时支持多种能力。
+    # 单选场景（embedding/rerank 等专用模型）只有一个值。
+    purpose: Mapped[str] = mapped_column(String(128), default="chat")
     provider: Mapped[str] = mapped_column(String(32), default="custom")   # aliyun/zhipu/bailian/openai/local/custom
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)  # 用户端展示名
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)    # 上游真实模型名
@@ -206,6 +207,9 @@ class LlmModel(Base, AuditMixin):
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     sort: Mapped[int] = mapped_column(Integer, default=0)
     remark: Mapped[str | None] = mapped_column(String(512))
+    # 是否支持图片输入（多模态）：仅当 chat 模型可识图时才把文档图片发给它，
+    # 否则只传文字描述，避免服务端返回"不支持 image_url 类型"
+    supports_vision: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ModelRoleBinding(Base, AuditMixin):

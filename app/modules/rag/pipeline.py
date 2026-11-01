@@ -19,6 +19,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+import re
 import time
 from typing import AsyncIterator
 
@@ -150,7 +151,8 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
         skip_analysis = True
     else:
         llm = get_model_llm(runtime.id, runtime.lock_version, runtime.base_url,
-                            runtime.api_key, runtime.model_name, runtime.allow_empty_key)
+                            runtime.api_key, runtime.model_name, runtime.allow_empty_key,
+                            runtime.supports_vision)
         model_name = runtime.display_name or runtime.model_name
         # 本地部署（CPU 推理）跑一次分析就要几十秒，跳过意图/改写/路由三连，直接检索生成
         skip_analysis = runtime.allow_empty_key
@@ -527,10 +529,32 @@ class _CardStreamFilter:
         return None
 
 
+_IMG_MD_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+
+def _extract_doc_images(chunks: list[RetrievedChunk], limit: int = 4) -> list[str]:
+    """从检索分段中提取文档图片 URL（去重、限数）。"""
+    seen: set[str] = set()
+    urls: list[str] = []
+    for c in chunks:
+        for u in _IMG_MD_RE.findall(c.text or ""):
+            if u in seen:
+                continue
+            seen.add(u)
+            urls.append(u)
+            if len(urls) >= limit:
+                return urls
+    return urls
+
+
 async def _generate(intent: str, question: str, rewritten: str,
                     chunks: list[RetrievedChunk], history: str,
                     *, llm=None) -> AsyncIterator[str]:
-    """基于参考资料流式生成。LLM 不可用 → 直接返回检索到的资料摘要兜底。"""
+    """基于参考资料流式生成。LLM 不可用 → 直接返回检索到的资料摘要兜底。
+
+    若当前对话模型支持多模态（llm.supports_vision），且检索分段含文档图片，
+    则把图片作为 image_url 一并发送；否则只传文字描述，避免服务端报错。
+    """
     llm = llm or get_llm()
     if not llm.available:
         fallback = _no_llm_fallback(chunks)
@@ -541,9 +565,27 @@ async def _generate(intent: str, question: str, rewritten: str,
                     contexts=_fmt_contexts(chunks), question=question)
     system = f"你是{intent}领域的资深技术专家。" + (
         f"\n\n# 历史对话\n{history}" if history else "")
+
+    # 多模态：仅当模型支持识图且分段含图片时才发送图片
+    doc_image_parts: list[dict] = []
+    if getattr(llm, "supports_vision", False):
+        img_urls = _extract_doc_images(chunks)
+        if img_urls:
+            doc_image_parts = await _load_image_parts(img_urls)
+            logger.info("rag_doc_images_sent", count=len(doc_image_parts),
+                        model=llm.chat_model)
+
     try:
-        async for token in llm.stream_chat(prompt, system=system, temperature=0.5):
-            yield token
+        if doc_image_parts:
+            messages = ([{"role": "system", "content": system}] if system else []) + \
+                       [{"role": "user", "content": [
+                           {"type": "text", "text": prompt}, *doc_image_parts]}]
+            async for token in llm.stream_chat(None, system=system, temperature=0.5,
+                                               messages=messages):
+                yield token
+        else:
+            async for token in llm.stream_chat(prompt, system=system, temperature=0.5):
+                yield token
     except Exception as e:
         logger.warning("generate_stream_failed", error=str(e))
         yield "\n（生成服务暂时不稳定，以上为检索到的关键资料摘要。）"

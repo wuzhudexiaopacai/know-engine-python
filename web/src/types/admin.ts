@@ -15,13 +15,14 @@ export interface ModelVO {
   enabled: number
   sort: number
   remark: string | null
+  supports_vision: number
   lock_version: number
   updated_at: string
 }
 
 /** 新增/编辑模型表单 */
 export interface ModelSavePayload {
-  purpose: string
+  purpose: string | string[]
   provider: string
   display_name: string
   model_name: string
@@ -31,6 +32,7 @@ export interface ModelSavePayload {
   enabled: boolean
   sort: number
   remark?: string | null
+  supports_vision?: boolean
 }
 
 export interface ModelTestPayload {
