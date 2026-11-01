@@ -157,7 +157,10 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
         # 本地部署（CPU 推理）跑一次分析就要几十秒，跳过意图/改写/路由三连，直接检索生成
         skip_analysis = runtime.allow_empty_key
     display_question = question + "".join(f"\n\n![]({u})" for u in pics)
-    conv_id, _ = await chat.ensure_conversation(user_id, conversation_id, question)
+    conv_id, is_new = await chat.ensure_conversation(user_id, conversation_id, question)
+    # 新会话首条消息后异步生成语义标题（不阻塞主回答流）
+    if is_new:
+        asyncio.create_task(_async_title(conv_id, question))
     stop_event = stop_signal.register(conv_id)
     hub.begin(conv_id)
     try:
@@ -210,7 +213,7 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     # ---- 0. 图片理解：多模态直答，跳过 QA 缓存/意图/改写/路由/知识库检索 ----
     # 图片问题与知识库无关，走检索只会带出对不上的引用，且小模型易被长资料 prompt 拖垮。
     if image_parts:
-        history = await chat.get_history(conv_id)
+        history = await chat.get_history(conv_id, user_id)
         yield progress("正在分析图片...")
         answer = ""
         async for token in _vision_chat(question, history, image_parts, llm=llm):
@@ -220,7 +223,11 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             if stop_event.is_set():
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
+        asyncio.create_task(_maybe_summarize(user_id, conv_id))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
+        _suggestion = await _generate_suggestions(question, answer, llm=llm)
+        if _suggestion:
+            yield _suggestion
         yield SseEvent.DONE, {"conversation_id": conv_id, "message_id": assistant_msg_id}
         return
 
@@ -233,21 +240,26 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             logger.warning("qa_cache_lookup_failed", error=str(e))
             hit = None
         if hit is not None:
-            # 缓存命中同样要落库：否则刷新后助手气泡只剩“命中缓存”标签、正文为空
+            # 缓存命中同样要落库：否则刷新后助手气泡只剩"命中缓存"标签、正文为空
             refs = hit.get("references") or []
-            await chat.update_assistant_content(assistant_msg_id, hit["answer"], cache_hit=1)
+            answer = hit["answer"]
+            await chat.update_assistant_content(assistant_msg_id, answer, cache_hit=1)
             if refs:
                 await chat.update_rag_references(assistant_msg_id, refs)
             yield progress("命中知识库问答缓存")
-            yield SseEvent.TOKEN, {"text": hit["answer"]}
+            yield SseEvent.TOKEN, {"text": answer}
             if refs:
                 yield SseEvent.REFERENCE, {"references": refs}
+            asyncio.create_task(_maybe_summarize(user_id, conv_id))
             yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
+            _suggestion = await _generate_suggestions(question, answer, llm=llm)
+            if _suggestion:
+                yield _suggestion
             yield SseEvent.DONE, {"conversation_id": conv_id, "message_id": assistant_msg_id}
             return
 
     # ---- 2. 意图识别 ----
-    history = await chat.get_history(conv_id)
+    history = await chat.get_history(conv_id, user_id)
     if skip_analysis:
         # 本地模型：三连分析太慢，直接按"相关+知识库"处理
         intent = IntentResult(related=True, intent="其他", reasoning="本地模型跳过意图分析")
@@ -269,7 +281,11 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
                 interrupted = True               # 用户中断：退出即关闭上游 LLM 流，部分答案照常持久化
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
+        asyncio.create_task(_maybe_summarize(user_id, conv_id))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
+        _suggestion = await _generate_suggestions(question, answer, llm=llm)
+        if _suggestion:
+            yield _suggestion
         yield SseEvent.DONE, {"conversation_id": conv_id, "message_id": assistant_msg_id}
         return
 
@@ -354,7 +370,11 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     if not interrupted and not image_parts:
         asyncio.create_task(_mine_qa_cache(question, answer, chunks))
 
+    asyncio.create_task(_maybe_summarize(user_id, conv_id))
     yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
+    _suggestion = await _generate_suggestions(question, answer, llm=llm)
+    if _suggestion:
+        yield _suggestion
     yield SseEvent.DONE, {"conversation_id": conv_id, "message_id": assistant_msg_id}
 
 
@@ -639,11 +659,66 @@ async def _async_title(conversation_id: str, question: str) -> None:
         return
     try:
         title = await llm.chat(render("title-summary-prompt", question=question),
-                               model=llm.cfg.flash_model, temperature=0.7, max_tokens=32)
+                               model=llm.flash_model, temperature=0.7, max_tokens=32)
         if title and title.strip():
             await chat.update_title(conversation_id, title.strip())
     except Exception as e:
         logger.warning("title_summary_failed", error=str(e))
+
+
+async def _maybe_summarize(user_id: str, conversation_id: str) -> None:
+    """滚动摘要：未折叠消息达到阈值时，异步生成新摘要并落库。
+
+    触发阈值 = summary_round_interval（轮次）* 2（每轮 user+assistant 两条）。
+    长期记忆关闭时直接跳过。LLM 失败静默降级，不影响主流程。
+    """
+    try:
+        pref = await chat.get_preference(user_id)
+        if not pref.long_term_memory_enabled:
+            return
+        threshold = max(2, int(pref.summary_round_interval)) * 2
+        unfolded = await chat.count_messages_since_summary(conversation_id)
+        if unfolded < threshold:
+            return
+        prev = await chat.get_summary(conversation_id)
+        prev_summary = prev.summary_text if prev and prev.summary_text else "（无）"
+        # 取本轮待折叠的消息（最近 unfolded 条按正序）
+        history_plain = await chat.get_history(conversation_id)  # 不带摘要，纯最近窗口
+        llm = get_llm()
+        if not llm.available:
+            return
+        new_summary = await llm.chat(
+            render("conversation-summary-prompt",
+                   prev_summary=prev_summary, new_messages=history_plain),
+            model=llm.flash_model, temperature=0.3, max_tokens=1024)
+        if new_summary and new_summary.strip():
+            # 新摘要折叠了此前所有未折叠消息
+            total_folded = (prev.message_count if prev else 0) + unfolded
+            await chat.save_summary(conversation_id, new_summary.strip(), total_folded)
+            logger.info("conversation_summarized", conv=conversation_id,
+                        folded=total_folded, summary_len=len(new_summary))
+    except Exception as e:
+        logger.warning("conversation_summary_failed", error=str(e))
+
+
+async def _generate_suggestions(question: str, answer: str, *, llm=None) -> tuple[str, dict] | None:
+    """生成 3 条 follow-up 建议问题，返回 SUGGESTIONS 事件元组；失败返回 None。"""
+    from app.models.constants import SseEvent
+    llm = llm or get_llm()
+    if not llm.available or not question or not answer:
+        return None
+    try:
+        raw = await llm.chat(
+            render("followup-suggestions-prompt", question=question[:500], answer=answer[:2000]),
+            model=llm.flash_model, temperature=0.7, max_tokens=200)
+        questions = [line.strip().lstrip("0123456789.、) ")
+                     for line in (raw or "").splitlines() if line.strip()]
+        questions = [q for q in questions if q][:3]
+        if questions:
+            return SseEvent.SUGGESTIONS, {"questions": questions}
+    except Exception as e:
+        logger.warning("followup_suggestions_failed", error=str(e))
+    return None
 
 
 async def _mine_qa_cache(question: str, answer: str, chunks: list[RetrievedChunk]) -> None:

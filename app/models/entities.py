@@ -152,6 +152,35 @@ class ChatMessage(Base, AuditMixin):
     )
 
 
+class ChatConversationSummary(Base, AuditMixin):
+    """会话长期滚动摘要：每达阈值把旧消息折叠进摘要，摘要 + 最近窗口 = 上下文。
+
+    滚动策略：新摘要 = LLM(旧摘要 + 自上次摘要以来的消息)，只保留每个会话最新一条。
+    """
+
+    __tablename__ = "chat_conversation_summary"
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)   # 折叠进摘要的消息条数
+
+
+class UserPreference(Base, AuditMixin):
+    """用户对话偏好：长期记忆开关、滑动窗口大小、摘要触发轮次。
+
+    user_id 即 owner_key（identity:sub），按用户隔离；无记录时由 service 惰性创建默认行。
+    """
+
+    __tablename__ = "user_preference"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    long_term_memory_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    memory_window_size: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    summary_round_interval: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+
+
 # ------------------------------------------------------------------
 # 账号
 # ------------------------------------------------------------------

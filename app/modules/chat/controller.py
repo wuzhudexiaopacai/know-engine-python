@@ -171,6 +171,60 @@ async def list_conversations(scope: str = Query("self", pattern="^(self|all)$"),
     return R.ok(await chat.list_conversations(user.owner_key, include_all))
 
 
+@router.get("/preferences")
+async def get_preferences(user: CurrentUser = Depends(get_current_user)) -> R:
+    """当前用户的对话偏好（长期记忆开关、滑动窗口大小、摘要轮次）。"""
+    pref = await chat.get_preference(user.owner_key)
+    return R.ok(chat.preference_to_dict(pref))
+
+
+class PreferenceRequest(BaseModel):
+    long_term_memory_enabled: bool | None = None
+    memory_window_size: int | None = Field(default=None, ge=2, le=100)
+    summary_round_interval: int | None = Field(default=None, ge=2, le=50)
+
+
+@router.put("/preferences")
+async def update_preferences(body: PreferenceRequest,
+                             user: CurrentUser = Depends(get_current_user)) -> R:
+    """更新对话偏好；仅传入的字段生效，未传字段保持不变。"""
+    fields = body.model_dump(exclude_none=True)
+    pref = await chat.update_preference(user.owner_key, **fields)
+    return R.ok(chat.preference_to_dict(pref), "偏好已更新")
+
+
+@router.get("/suggestions")
+async def memory_suggestions(user: CurrentUser = Depends(get_current_user)) -> R:
+    """基于用户最近会话主题生成 3 个新会话建议问题；无记忆时返回静态兜底。"""
+    from app.services.llm_client import get_llm
+    from app.services.prompt_loader import render
+
+    fallback = [
+        "Redis 的持久化方案怎么选？",
+        "微服务下的分布式事务怎么处理？",
+        "Vue 项目构建太慢怎么优化？",
+    ]
+    try:
+        # 取用户最近 10 个会话标题作为主题线索
+        convs = await chat.list_conversations(user.owner_key)
+        topics = [c["title"] for c in convs[:10] if c.get("title")]
+        if not topics:
+            return R.ok(fallback)
+        llm = get_llm()
+        if not llm.available:
+            return R.ok(fallback)
+        raw = await llm.chat(
+            render("memory-suggestions-prompt", recent_topics="\n".join(topics)),
+            model=llm.flash_model, temperature=0.7, max_tokens=200)
+        questions = [line.strip().lstrip("0123456789.、) ")
+                     for line in (raw or "").splitlines() if line.strip()]
+        questions = [q for q in questions if q][:3]
+        return R.ok(questions if len(questions) >= 3 else fallback)
+    except Exception as e:
+        logger.warning("memory_suggestions_failed", error=str(e))
+        return R.ok(fallback)
+
+
 @router.get("/messages")
 async def list_messages(conversation_id: str = Query(...),
                         user: CurrentUser = Depends(get_current_user)) -> R:

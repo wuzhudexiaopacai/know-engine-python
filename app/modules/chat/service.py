@@ -13,12 +13,13 @@ from app.core.exceptions import NotFoundError
 from app.core.logging import get_logger
 from app.infra.snowflake import next_id_str
 from app.models.constants import ConversationStatus, MessageType
-from app.models.entities import ChatConversation, ChatMessage
+from app.models.entities import (
+    ChatConversation, ChatConversationSummary, ChatMessage, UserPreference)
 from app.models.queries import base_filter
 
 logger = get_logger("app.chat.service")
 
-_MEMORY_WINDOW = 10   # 滑动窗口大小：最近 10 条消息
+_MEMORY_WINDOW = 10   # 滑动窗口默认大小：最近 10 条消息（5 轮）
 
 
 # ------------------------------------------------------------------
@@ -187,21 +188,125 @@ async def reference_detail(chunk_id: str) -> dict:
     }
 
 
-async def get_history(conversation_id: str) -> str:
-    """滑动窗口历史（供 Prompt 上下文）：最近 N 条按时间正序拼文本。"""
+async def get_history(conversation_id: str, user_id: str | None = None) -> str:
+    """滑动窗口历史（供 Prompt 上下文）。
+
+    若提供 user_id：从用户偏好取窗口大小；长期记忆开启时在历史前注入最新摘要。
+    返回单字符串：[# 对话摘要\\n{summary}\\n\\n# 最近对话\\n] + 最近 N 条消息文本。
+    偏好/摘要查询失败时降级为默认窗口、无摘要，不影响主流程。
+    """
+    window = _MEMORY_WINDOW
+    summary_text = ""
+    if user_id:
+        try:
+            pref = await get_preference(user_id)
+            window = max(2, min(100, int(pref.memory_window_size)))
+            if pref.long_term_memory_enabled:
+                s = await get_summary(conversation_id)
+                if s and s.summary_text:
+                    summary_text = s.summary_text
+        except Exception as e:
+            logger.warning("get_history_pref_failed", error=str(e))
+
     async with session_scope() as session:
         rows = (await session.execute(
             base_filter(ChatMessage)
             .where(ChatMessage.conversation_id == conversation_id,
                    ChatMessage.content.is_not(None))
             .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
-            .limit(_MEMORY_WINDOW))).scalars().all()
+            .limit(window))).scalars().all()
     lines = []
     for m in reversed(rows):
         role = "用户" if m.type == MessageType.USER else "助手"
         if m.content:
             lines.append(f"{role}: {m.content[:500]}")
-    return "\n".join(lines)
+    history = "\n".join(lines)
+    if summary_text:
+        return f"# 对话摘要\n{summary_text}\n\n# 最近对话\n{history}"
+    return history
+
+
+async def count_messages_since_summary(conversation_id: str) -> int:
+    """自上次摘要以来尚未折叠的消息条数（用于判断是否触发新一轮摘要）。
+
+    总消息数 - 已折叠进摘要的消息数 = 未折叠消息数。
+    """
+    s = await get_summary(conversation_id)
+    folded = s.message_count if s else 0
+    async with session_scope() as session:
+        total = (await session.execute(
+            select(func.count()).select_from(ChatMessage)
+            .where(ChatMessage.conversation_id == conversation_id,
+                   ChatMessage.deleted == 0))).scalar_one()
+    return max(0, int(total) - folded)
+
+
+# ------------------------------------------------------------------
+# 用户偏好
+# ------------------------------------------------------------------
+async def get_preference(user_id: str) -> UserPreference:
+    """获取用户对话偏好，无记录则创建默认行并返回。"""
+    async with session_scope() as session:
+        pref = (await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        )).scalar_one_or_none()
+        if pref is None:
+            pref = UserPreference(user_id=user_id)
+            session.add(pref)
+            await session.flush()
+            await session.refresh(pref)
+        return pref
+
+
+async def update_preference(user_id: str, **fields) -> UserPreference:
+    """更新用户对话偏好，仅允许白名单字段；无记录则按给定值创建。"""
+    allowed = {"long_term_memory_enabled", "memory_window_size", "summary_round_interval"}
+    values = {k: v for k, v in fields.items() if k in allowed}
+    async with session_scope() as session:
+        pref = (await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        )).scalar_one_or_none()
+        if pref is None:
+            pref = UserPreference(user_id=user_id, **values)
+            session.add(pref)
+        else:
+            for k, v in values.items():
+                setattr(pref, k, v)
+        await session.flush()
+        await session.refresh(pref)
+        return pref
+
+
+def preference_to_dict(p: UserPreference) -> dict:
+    return {
+        "long_term_memory_enabled": p.long_term_memory_enabled,
+        "memory_window_size": p.memory_window_size,
+        "summary_round_interval": p.summary_round_interval,
+    }
+
+
+# ------------------------------------------------------------------
+# 长期摘要
+# ------------------------------------------------------------------
+async def get_summary(conversation_id: str) -> ChatConversationSummary | None:
+    """返回会话最新摘要（若无则 None）。"""
+    async with session_scope() as session:
+        return (await session.execute(
+            base_filter(ChatConversationSummary)
+            .where(ChatConversationSummary.conversation_id == conversation_id)
+            .order_by(ChatConversationSummary.id.desc())
+            .limit(1))).scalar_one_or_none()
+
+
+async def save_summary(conversation_id: str, text: str, message_count: int) -> None:
+    """保存新摘要（追加一条新记录，保留历史便于回溯）。"""
+    async with session_scope() as session:
+        session.add(ChatConversationSummary(
+            conversation_id=conversation_id,
+            summary_text=text[:4000],
+            token_count=len(text),
+            message_count=message_count,
+        ))
 
 
 async def list_messages(conversation_id: str, owner_key: str,

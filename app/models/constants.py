@@ -128,6 +128,7 @@ class SseEvent:
     REFERENCE = "reference"      # RAG 引用溯源
     CARD = "card"                # 结构化卡片（方案/数据对比）
     ANSWER_MESSAGE = "answer_message"  # 答案消息 ID（评价按钮绑定）
+    SUGGESTIONS = "suggestions"      # 回答后 follow-up 建议问题（done 前下发）
     DONE = "done"                # 流结束
     ERROR = "error"              # 管道级错误（含降级提示）
 
