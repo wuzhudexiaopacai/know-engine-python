@@ -1,0 +1,36 @@
+{
+  "name": "know-engine-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KnowEngine-Python 企业级知识引擎前端（Vue3 + TS + Element Plus）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@vscode/markdown-it-katex": "^1.1.2",
+    "axios": "^1.7.9",
+    "dompurify": "^3.4.17",
+    "element-plus": "^2.9.1",
+    "katex": "^0.16.47",
+    "markdown-it": "^15.0.3",
+    "mermaid": "^12.2.0",
+    "pinia": "^2.3.0",
+    "spark-md5": "^3.0.2",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/spark-md5": "^3.0.4",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "sass": "^1.83.0",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.5",
+    "vue-tsc": "^2.2.0"
+  }
+}

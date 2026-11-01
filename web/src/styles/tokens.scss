@@ -1,0 +1,102 @@
+// 设计令牌（Design Tokens）：全站颜色/间距/圆角/阴影的唯一事实源。
+// 企业级 SaaS 视觉：明亮商务蓝 + 冷白背景，清爽、通透、信息优先。
+
+:root {
+  // ---- 品牌主色（明亮商务蓝）----
+  --ke-brand-50:  #edf4ff;
+  --ke-brand-100: #dbe8ff;
+  --ke-brand-200: #c2d8fd;
+  --ke-brand-400: #75a2f5;
+  --ke-brand-500: #2f6fed;
+  --ke-brand-600: #1f5ed6;
+  --ke-brand-700: #184cb0;
+  --ke-brand-800: #153f8f;
+
+  // ---- 辅助冷色（原极光色，仅保留极弱点缀，不再用于大面积色块）----
+  --ke-aurora-1: #9cbcf5;
+  --ke-aurora-2: #6f9cf0;
+  --ke-aurora-3: #4a7fe3;
+
+  // ---- 页面底色（极浅蓝白，避免灰调与藏蓝）----
+  --ke-bg-page: #f6faff;
+  --ke-bg-sidebar: #f2f7ff;
+  --ke-bg-active: #e8f1ff;
+
+  // ---- 中性冷灰阶（带蓝调，用于文本层级与分隔）----
+  --ke-gray-25:   #fbfdff;
+  --ke-gray-50:   #f5f9fe;
+  --ke-gray-100:  #eef4fa;
+  --ke-gray-200:  #e2eaf4;
+  --ke-gray-300:  #c8d5e5;
+  --ke-gray-400:  #93a6bd;
+  --ke-gray-500:  #677d97;
+  --ke-gray-600:  #4c617b;
+  --ke-gray-700:  #354a63;
+  --ke-gray-800:  #22364d;
+  --ke-gray-900:  #16273a;
+
+  // ---- 语义色（明亮版）----
+  --ke-success: #16a06a;
+  --ke-warning: #d08a17;
+  --ke-danger:  #d64545;
+  --ke-info:    #2f6fed;
+
+  // ---- 间距刻度（4px 基准，常用 16 / 24 / 32）----
+  --ke-space-1: 4px;
+  --ke-space-2: 8px;
+  --ke-space-3: 12px;
+  --ke-space-4: 16px;
+  --ke-space-5: 20px;
+  --ke-space-6: 24px;
+  --ke-space-7: 28px;
+  --ke-space-8: 32px;
+
+  // ---- 圆角 ----
+  --ke-radius-sm: 6px;
+  --ke-radius-md: 8px;
+  --ke-radius-lg: 12px;
+
+  // ---- 阴影（轻量、低干扰）----
+  --ke-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --ke-shadow-md: 0 4px 12px rgba(16, 24, 40, 0.07);
+  --ke-shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.10);
+  --ke-shadow-brand: 0 4px 14px rgba(47, 111, 237, 0.20);
+
+  // ---- 动效刻度 ----
+  --ke-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ke-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ke-duration-fast: 0.16s;
+  --ke-duration-base: 0.24s;
+
+  // ---- 布局尺寸 ----
+  --ke-header-h: 60px;
+  --ke-sidebar-w: 272px;
+  --ke-content-maxw: 1280px;
+}
+
+// 用设计令牌回填 Element Plus 主题变量，保证组件库与自定义样式同源。
+:root {
+  --el-color-primary: var(--ke-brand-500);
+  --el-color-primary-light-3: #6e9cf2;
+  --el-color-primary-light-5: #a3c0f8;
+  --el-color-primary-light-7: #cfdffd;
+  --el-color-primary-light-8: #dfe9fe;
+  --el-color-primary-light-9: var(--ke-brand-50);
+  --el-color-primary-dark-2: var(--ke-brand-600);
+
+  --el-color-success: var(--ke-success);
+  --el-color-warning: var(--ke-warning);
+  --el-color-danger:  var(--ke-danger);
+  --el-color-info:    var(--ke-info);
+
+  --el-border-radius-base: var(--ke-radius-sm);
+  --el-font-size-base: 14px;
+  --el-text-color-primary: var(--ke-gray-800);
+  --el-text-color-regular: var(--ke-gray-700);
+  --el-text-color-secondary: var(--ke-gray-500);
+  --el-text-color-placeholder: var(--ke-gray-400);
+  --el-border-color: var(--ke-gray-200);
+  --el-border-color-light: var(--ke-gray-100);
+  --el-fill-color-blank: #ffffff;
+  --el-bg-color-page: var(--ke-bg-page);
+}

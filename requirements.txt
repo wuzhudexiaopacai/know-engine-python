@@ -1,0 +1,58 @@
+# know-engine-python 依赖清单
+# 运行环境：Python 3.11+
+
+# ---------- Web 框架 ----------
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9          # 表单/文件上传解析
+
+# ---------- 数据校验与配置 ----------
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+
+# ---------- 数据库（中间件由 docker-compose 部署：MySQL 8 / Redis 7 / ES 8 / Neo4j 5 / MinIO） ----------
+sqlalchemy[asyncio]>=2.0.30
+aiomysql>=0.2.0                  # MySQL 异步驱动（主存储）
+aiosqlite>=0.20.0                # SQLite 降级驱动（无 MySQL 环境的 dev 兑底）
+
+# ---------- Elasticsearch 8 官方异步客户端（KNN/全文/混合检索） ----------
+elasticsearch>=8.13.0,<9.0.0
+aiohttp>=3.9.0                   # AsyncElasticsearch 传输层（缺此依赖会降级为库内向量）
+
+# ---------- Neo4j 官方异步驱动（Text2Cypher） ----------
+neo4j>=5.20.0
+
+# ---------- MinIO 对象存储（镜像 cgr.dev/chainguard/minio） ----------
+minio>=7.2.0
+
+# ---------- HTTP 客户端（LLM / Embedding / 文档解析服务） ----------
+httpx>=0.27.0
+
+# ---------- 弹性工程：重试 / 限速 / 熔断 ----------
+tenacity>=8.5.0                  # 指数退避重试
+
+# ---------- 定时任务（补偿兜底） ----------
+APScheduler>=3.10.0
+
+# ---------- 缓存（L2，可选；未配置 Redis 时自动降级为进程内 TTL） ----------
+redis>=5.0.0
+
+# ---------- 数值计算（向量相似度 / RRF 融合） ----------
+numpy>=1.26.0
+
+# ---------- 文档解析 ----------
+pypdf>=4.2.0                     # PDF 文本抽取
+pillow>=10.0.0                   # PDF 内嵌图片抽取（pypdf[image] 依赖）
+python-docx>=1.1.0               # Word 转 Markdown
+openpyxl>=3.1.0                  # xlsx 解析
+# xlrd>=2.0.1                    # 旧版 .xls 按需启用
+markdown-it-py>=3.0.0            # Markdown 结构解析（切片器依赖）
+
+# ---------- 安全 ----------
+# 口令哈希使用标准库 hashlib.pbkdf2_hmac（见 app/modules/auth/password.py），
+# 避免 bcrypt 原生扩展在 Windows 上的编译问题
+itsdangerous>=2.2.0              # 签名令牌
+
+# ---------- 可观测性（结构化日志） ----------
+structlog>=24.1.0
+colorama>=0.4.6                  # Windows 彩色控制台（非 Windows 平台为空操作依赖）

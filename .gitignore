@@ -1,0 +1,30 @@
+# ---- 密钥与本地配置（严禁提交）----
+.env
+.env.local
+*.pem
+*.key
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 运行时数据与日志（SQLite 降级库 / 上传落地 / uvicorn 日志）----
+data/
+*.log
+
+# ---- 前端 ----
+web/node_modules/
+web/dist/
+web/.env.local
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

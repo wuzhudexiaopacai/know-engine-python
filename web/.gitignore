@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+# 自动导入类型声明由 Vite 生成并纳入版本管理，供 vue-tsc 首次类型检查可见
+# auto-imports.d.ts
+# components.d.ts
