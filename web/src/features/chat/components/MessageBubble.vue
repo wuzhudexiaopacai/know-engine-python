@@ -195,7 +195,13 @@ async function openReference(r: RagReference): Promise<void> {
         <span v-if="previewDetail.truncated" class="ke-muted">（仅展示前 4000 字）</span>
       </div>
       <p v-else-if="previewError" class="ref-dialog__tip">{{ previewError }}</p>
-      <pre class="ref-dialog__content">{{ previewDetail?.content || activeRef?.chunkContent || '暂无片段内容' }}</pre>
+      <div class="ref-dialog__content">
+        <MarkdownView
+          v-if="previewDetail?.content || activeRef?.chunkContent"
+          :text="previewDetail?.content || activeRef?.chunkContent || ''"
+        />
+        <p v-else class="ref-dialog__empty">暂无片段内容</p>
+      </div>
     </div>
 
     <template #footer>
@@ -220,9 +226,10 @@ async function openReference(r: RagReference): Promise<void> {
     display: grid; place-items: center; font-weight: 600; font-size: 14px;
   }
 
-  &__body { display: flex; flex-direction: column; gap: var(--ke-space-2); }
-  &--assistant &__body { align-items: flex-start; width: 100%; }
-  &--user &__body { align-items: flex-end; max-width: 78%; }
+  // min-width: 0 关键：flex 子项默认按内容撑开，长代码行会把整条消息撑宽、溢出对话区
+  &__body { display: flex; flex-direction: column; gap: var(--ke-space-2); min-width: 0; }
+  &--assistant &__body { align-items: flex-start; flex: 1; min-width: 0; }
+  &--user &__body { align-items: flex-end; max-width: 78%; min-width: 0; }
 
   &__meta { display: flex; align-items: center; gap: var(--ke-space-2); align-self: flex-start; }
   &__transform { margin: 0; font-size: 12px; color: var(--ke-gray-400); }
@@ -241,6 +248,8 @@ async function openReference(r: RagReference): Promise<void> {
 
   &__content {
     word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
     color: var(--ke-gray-800);
 
     // AI 回答：白底正文，作为标准内容区而非悬浮气泡
@@ -357,9 +366,11 @@ async function openReference(r: RagReference): Promise<void> {
   &__content {
     margin: 0; padding: 14px 16px; max-height: 52vh; overflow: auto;
     background: var(--ke-gray-50); border: 1px solid var(--ke-gray-200);
-    border-radius: 8px; font-family: inherit; font-size: 13px; line-height: 1.85;
-    color: var(--ke-gray-700); white-space: pre-wrap; word-break: break-word;
+    border-radius: 8px;
+    // MarkdownView 根容器 .md 在弹窗内收紧字号与行高，与正文区分
+    :deep(.md) { font-size: 13px; line-height: 1.85; color: var(--ke-gray-700); }
   }
+  &__empty { margin: 0; color: var(--ke-gray-400); }
   &__tip { margin: 0 0 10px; font-size: 12px; color: var(--ke-gray-400); }
 }
 

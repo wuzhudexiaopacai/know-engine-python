@@ -199,6 +199,8 @@ async function onCopyClick(e: MouseEvent) {
 
 <style scoped lang="scss">
 .md {
+  min-width: 0;
+  max-width: 100%;
   :deep(p) { margin: 0 0 0.7em; }
   :deep(p:last-child) { margin-bottom: 0; }
   :deep(ul), :deep(ol) { margin: 0 0 0.7em; padding-left: 1.4em; }
@@ -227,13 +229,15 @@ async function onCopyClick(e: MouseEvent) {
     background: var(--ke-brand-100); color: var(--ke-brand-800);
     padding: 0 2px; border-radius: 3px;
   }
+  // 代码块：宽度锁定在正文列内，超长行只在本块内横向滚动（不撑宽对话框）
   :deep(pre) {
     position: relative; margin: 0.5em 0; padding: 10px 12px;
+    max-width: 100%;
     background: #0f172a; color: #e2e8f0; border-radius: var(--ke-radius-sm);
-    overflow-x: auto; line-height: 1.6;
+    overflow-x: auto; white-space: pre; line-height: 1.6;
   }
   :deep(pre code) { padding: 0; background: transparent; color: inherit; }
-  :deep(.md__pre) { position: relative; }
+  :deep(.md__pre) { position: relative; max-width: 100%; min-width: 0; }
   :deep(.md__copy) {
     position: absolute; top: 6px; right: 8px;
     border: 1px solid rgba(226, 232, 240, 0.3); background: rgba(226, 232, 240, 0.1);

@@ -705,7 +705,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     background: #fff;
   }
 
-  &__thread { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-y: auto; padding: var(--ke-space-6) var(--ke-space-6) var(--ke-space-2); }
+  // overflow-x: hidden：兜底裁掉横向溢出，横向滚动条只出现在代码块内部
+  &__thread {
+    position: relative; z-index: 1; flex: 1; min-height: 0;
+    overflow-y: auto; overflow-x: hidden;
+    padding: var(--ke-space-6) var(--ke-space-6) var(--ke-space-2);
+  }
   &__skeleton { max-width: 760px; margin: 0 auto; }
 
   &__welcome { text-align: center; padding: 56px var(--ke-space-4) var(--ke-space-6); }
