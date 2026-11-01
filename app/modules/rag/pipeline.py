@@ -158,9 +158,6 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
         skip_analysis = runtime.allow_empty_key
     display_question = question + "".join(f"\n\n![]({u})" for u in pics)
     conv_id, is_new = await chat.ensure_conversation(user_id, conversation_id, question)
-    # 新会话首条消息后异步生成语义标题（不阻塞主回答流）
-    if is_new:
-        asyncio.create_task(_async_title(conv_id, question))
     stop_event = stop_signal.register(conv_id)
     hub.begin(conv_id)
     try:
@@ -169,7 +166,8 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
                 stop_event, user_id, conv_id, question,
                 user_identity=user_identity, use_cache=use_cache and not image_parts,
                 llm=llm, model_name=model_name, skip_analysis=skip_analysis,
-                display_question=display_question, image_parts=image_parts):
+                display_question=display_question, image_parts=image_parts,
+                is_new=is_new):
             hub.publish(conv_id, *item)
             yield item
     finally:
@@ -184,7 +182,8 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
                        model_name: str | None = None,
                        skip_analysis: bool = False,
                        display_question: str | None = None,
-                       image_parts: list[dict] | None = None) -> AsyncIterator[tuple[str, dict]]:
+                       image_parts: list[dict] | None = None,
+                       is_new: bool = False) -> AsyncIterator[tuple[str, dict]]:
     """管道主体：产出 (event_name, data) 序列。event_name 取自 SseEvent。
 
     会话已由主入口 ensure 并注册停止信号，此处直接复用，不再重复建会话。"""
@@ -223,7 +222,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             if stop_event.is_set():
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
-        asyncio.create_task(_maybe_summarize(user_id, conv_id))
+        asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+        if is_new and answer:
+            asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
         _suggestion = await _generate_suggestions(question, answer, llm=llm)
         if _suggestion:
@@ -250,7 +251,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             yield SseEvent.TOKEN, {"text": answer}
             if refs:
                 yield SseEvent.REFERENCE, {"references": refs}
-            asyncio.create_task(_maybe_summarize(user_id, conv_id))
+            asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+            if is_new and answer:
+                asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
             yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
             _suggestion = await _generate_suggestions(question, answer, llm=llm)
             if _suggestion:
@@ -281,7 +284,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
                 interrupted = True               # 用户中断：退出即关闭上游 LLM 流，部分答案照常持久化
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
-        asyncio.create_task(_maybe_summarize(user_id, conv_id))
+        asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+        if is_new and answer:
+            asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
         _suggestion = await _generate_suggestions(question, answer, llm=llm)
         if _suggestion:
@@ -370,7 +375,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     if not interrupted and not image_parts:
         asyncio.create_task(_mine_qa_cache(question, answer, chunks))
 
-    asyncio.create_task(_maybe_summarize(user_id, conv_id))
+    asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+    if is_new and answer:
+        asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
     yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
     _suggestion = await _generate_suggestions(question, answer, llm=llm)
     if _suggestion:
@@ -653,24 +660,38 @@ async def _general_chat(question: str, history: str, *, llm=None) -> AsyncIterat
         yield "抱歉，服务暂时不可用，请稍后再试。"
 
 
-async def _async_title(conversation_id: str, question: str) -> None:
-    llm = get_llm()
+async def _async_title(conversation_id: str, question: str, answer: str = "",
+                       *, llm=None) -> None:
+    """首轮问答后异步生成语义标题：基于「问题+回答内容」，而非首句截断。
+
+    标题会随滚动摘要刷新（见 _maybe_summarize），最终反映会话整体主题。
+    """
+    llm = llm or get_llm()
     if not llm.available:
         return
     try:
-        title = await llm.chat(render("title-summary-prompt", question=question),
-                               model=llm.flash_model, temperature=0.7, max_tokens=32)
+        title = await llm.chat(
+            render("title-summary-prompt", question=question, answer=answer[:800]),
+            model=llm.flash_model, temperature=0.7, max_tokens=32)
         if title and title.strip():
-            await chat.update_title(conversation_id, title.strip())
+            await chat.update_title(conversation_id, _clean_title(title))
     except Exception as e:
         logger.warning("title_summary_failed", error=str(e))
 
 
-async def _maybe_summarize(user_id: str, conversation_id: str) -> None:
+def _clean_title(raw: str) -> str:
+    """清洗标题：去引号/书名号/句末标点，截断到 16 字，避免模型加解释或换行。"""
+    title = (raw or "").strip().strip('"\'“”‘’《》').splitlines()[0].strip()
+    title = title.rstrip("。！？.!?")
+    return title[:16]
+
+
+async def _maybe_summarize(user_id: str, conversation_id: str, *, llm=None) -> None:
     """滚动摘要：未折叠消息达到阈值时，异步生成新摘要并落库。
 
     触发阈值 = summary_round_interval（轮次）* 2（每轮 user+assistant 两条）。
-    长期记忆关闭时直接跳过。LLM 失败静默降级，不影响主流程。
+    长期记忆关闭时直接跳过。生成摘要后同步刷新会话标题，使标题反映会话整体主题。
+    LLM 失败静默降级，不影响主流程。
     """
     try:
         pref = await chat.get_preference(user_id)
@@ -684,7 +705,7 @@ async def _maybe_summarize(user_id: str, conversation_id: str) -> None:
         prev_summary = prev.summary_text if prev and prev.summary_text else "（无）"
         # 取本轮待折叠的消息（最近 unfolded 条按正序）
         history_plain = await chat.get_history(conversation_id)  # 不带摘要，纯最近窗口
-        llm = get_llm()
+        llm = llm or get_llm()
         if not llm.available:
             return
         new_summary = await llm.chat(
@@ -697,6 +718,15 @@ async def _maybe_summarize(user_id: str, conversation_id: str) -> None:
             await chat.save_summary(conversation_id, new_summary.strip(), total_folded)
             logger.info("conversation_summarized", conv=conversation_id,
                         folded=total_folded, summary_len=len(new_summary))
+            # 用摘要刷新标题：让侧栏标题收敛到会话真实主题（而非首句）
+            try:
+                title = await llm.chat(
+                    render("title-summary-prompt", question=new_summary, answer=""),
+                    model=llm.flash_model, temperature=0.5, max_tokens=32)
+                if title and title.strip():
+                    await chat.update_title(conversation_id, _clean_title(title))
+            except Exception as e:
+                logger.warning("title_from_summary_failed", error=str(e))
     except Exception as e:
         logger.warning("conversation_summary_failed", error=str(e))
 
