@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import math
+
 from sqlalchemy import select
 
 from app.config.settings import get_settings
@@ -26,8 +28,25 @@ from app.services.rerank import get_rerank
 
 logger = get_logger("app.rag.retrieval")
 
-# 无精排时的核心词命中率下限（精排场景另有 vector.min_score 门控）
+# 无精排时的核心词命中率下限（精排场景由下方 _SIG_TOP1_FLOOR / _SIG_REL_MARGIN 门控）
 _MIN_TERM_OVERLAP = 0.4
+
+# 精排门控参数。
+# llama.cpp / TEI 返回的是 Cross-Encoder 原始 logits（可正可负，量纲随模型变化），
+# 不能直接和固定阈值比较：同一批候选里 top1 分数高时，同档相关片段也可能为负值。
+# 因此先用 sigmoid 归一成 0~1 概率，再做两道门控：
+#   TOP1_FLOOR —— 整批最高分都低于该概率，判为"没有相关资料"，返回空（如"倒车入库"top1 logit≈-6.5）
+#   REL_MARGIN —— 保留与 top1 概率差距在 0.35 以内的片段，避免绝对阈值误杀次优的相关结果
+_SIG_TOP1_FLOOR = 0.30
+_SIG_REL_MARGIN = 0.35
+
+
+def _sigmoid(x: float) -> float:
+    """logits → 0~1 概率（防溢出）。"""
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
 
 
 async def _load_metadata(chunk_ids: list[str]) -> dict[str, dict]:
@@ -123,20 +142,31 @@ async def aggregate(query_text: str, chunks: list[RetrievedChunk]) -> list[Retri
     pairs = await get_rerank().rerank(query_text, [c.text for c in chunks],
                                       top_n=cfg.reranked_top_k)
     if pairs is not None:
+        # 精排分是原始 logits，先 sigmoid 归一，再按「top1 下限 + 相对差距」双重门控。
+        # 只用固定阈值会把 top1 附近的相关片段一起误杀（实测"事务隔离级别"正确片段 logit=-1.37）。
+        probs = [(_sigmoid(score), idx, score) for idx, score in pairs]
+        top_prob = max(p for p, _, _ in probs) if probs else 0.0
+        if top_prob < _SIG_TOP1_FLOOR:
+            logger.info("rerank_no_relevant", candidates=len(chunks),
+                        top_prob=round(top_prob, 4))
+            return []
+        keep_above = top_prob - _SIG_REL_MARGIN
         ranked: list[RetrievedChunk] = []
         dropped = 0
-        for idx, score in pairs:
-            # min_score 真正生效：低于阈值的精排结果不进入 Prompt，避免误导性引用
-            if score < cfg.min_score:
+        for prob, idx, score in probs:
+            if prob < keep_above:
                 dropped += 1
                 continue
             c = chunks[idx]
             c.rerank_score = score
             if c.similarity is None:
-                c.similarity = score
+                c.similarity = round(prob, 4)
             ranked.append(c)
+        # 概率降序（原始 logits 同序，这里显式排序防上游乱序）
+        ranked.sort(key=lambda c: -(c.rerank_score or 0.0))
         logger.info("rerank_done", pairs=len(pairs), kept=len(ranked), dropped=dropped,
-                    min_score=cfg.min_score)
+                    top_prob=round(top_prob, 4), keep_above=round(keep_above, 4),
+                    min_logit=cfg.min_score)
         return ranked[:cfg.reranked_top_k]
 
     # 无精排可用（本地部署常见：未配 Rerank 模型）：用问题词命中率做相关性校验。

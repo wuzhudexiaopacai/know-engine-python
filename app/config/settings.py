@@ -158,7 +158,7 @@ class VectorConfig(BaseSettings):
     index_name: str = "know-engine-chunks-v1"
     chunk_top_k: int = 30                     # 初召回数量（宽召回，交给精排/校验收敛）
     reranked_top_k: int = 8                   # 精排后进入 Prompt 的数量
-    min_score: float = 0.35                   # 相似度下限，低于阈值的结果丢弃
+    min_score: float = 0.35                   # 精排原始分参考值（仅日志记录；实际门控见 retrieval.py）
     # 单条上下文注入上限（字符）：父分段再长也只截断到该长度，避免单个引用挤爆上下文
     max_context_chars: int = 3000
     # Prompt 中参考资料总预算（字符）：超出后停止追加低排名分段
