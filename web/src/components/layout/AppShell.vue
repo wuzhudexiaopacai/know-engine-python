@@ -5,9 +5,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
 import { fetchProfile, updateProfile, uploadAvatar } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 import type { ProfileUpdatePayload } from '@/types/auth'
 
 const auth = useAuthStore()
+const { isDark, toggle: toggleTheme } = useTheme()
 const route = useRoute()
 const router = useRouter()
 
@@ -203,6 +205,10 @@ async function saveProfile(): Promise<void> {
             <el-dropdown-item v-if="auth.motto" disabled>
               <span class="shell__motto ke-truncate">{{ auth.motto }}</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="toggleTheme">
+              <el-icon><component :is="isDark ? 'Sunny' : 'Moon'" /></el-icon>
+              {{ isDark ? '亮色模式' : '暗色模式' }}
+            </el-dropdown-item>
             <el-dropdown-item divided @click="openProfile">
               <el-icon><User /></el-icon>
               个人资料
@@ -290,8 +296,9 @@ async function saveProfile(): Promise<void> {
     align-items: center;
     gap: var(--ke-space-6);
     padding: 0 var(--ke-space-6);
-    background: #fff;
-    border-bottom: 1px solid var(--ke-gray-200);
+    background: var(--ke-bg-card);
+    border-bottom: 1px solid var(--ke-gray-100);
+    box-shadow: var(--ke-shadow-sm);
     z-index: 10;
   }
 
@@ -307,7 +314,7 @@ async function saveProfile(): Promise<void> {
     height: 28px;
     border-radius: var(--ke-radius-sm);
     background: var(--ke-brand-500);
-    color: #fff;
+    color: var(--ke-on-brand);
     font-weight: 700;
     display: grid;
     place-items: center;
@@ -388,11 +395,11 @@ async function saveProfile(): Promise<void> {
     background: transparent;
     cursor: pointer;
     transition: border-color var(--ke-duration-fast), background var(--ke-duration-fast);
-    &:hover { border-color: var(--ke-gray-200); background: var(--ke-gray-25); }
+    &:hover { border-color: var(--ke-gray-200); background: var(--ke-bg-hover); }
   }
   &__avatar {
     background: var(--ke-brand-500);
-    color: #fff;
+    color: var(--ke-on-brand);
     font-weight: 600;
   }
   &__username {
@@ -444,7 +451,7 @@ async function saveProfile(): Promise<void> {
   }
   &__preview {
     background: var(--ke-brand-500);
-    color: #fff;
+    color: var(--ke-on-brand);
     font-weight: 600;
     font-size: 26px;
     cursor: pointer;

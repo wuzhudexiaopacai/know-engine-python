@@ -5,11 +5,13 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
 import '@/styles/index.scss'
 
 import App from './App.vue'
 import router from './router'
 import { useAuthStore } from '@/stores/auth'
+import { useTheme } from '@/composables/useTheme'
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -21,6 +23,9 @@ app.use(ElementPlus, { locale: zhCn })
 for (const [name, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(name, component)
 }
+
+// 挂载前先按本地存储应用主题（默认暗色），避免首屏白闪。
+useTheme().init()
 
 // 首屏前先用本地令牌恢复身份，再安装路由：
 // 否则冷启动深链接管理员路由时，守卫会在身份未就绪（isAdmin=false）时误跳对话页。
