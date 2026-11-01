@@ -357,7 +357,7 @@ async def _curate_answer(entry_id: str) -> dict | None:
         from app.services.prompt_loader import render
         raw = await llm.chat(
             render("qa-cache-curate-prompt", evidence=evidence),
-            model=llm.cfg.flash_model, temperature=0.2)
+            model=llm.flash_model, temperature=0.2)
         data = _parse_curate_json(raw or "")
         if data is None:
             logger.warning("qa_cache_curate_parse_failed", entry_id=entry_id)
