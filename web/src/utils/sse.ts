@@ -25,6 +25,8 @@ export interface StreamChatHandlers {
   onReference?: (refs: RagReference[]) => void
   onCard?: (card: ResultCard) => void
   onAnswerMessage?: (messageId: string) => void
+  /** 回答结束后的 follow-up 建议问题 */
+  onSuggestions?: (questions: string[]) => void
   onDone?: (payload: SsePayloadMap['done']) => void
   onError?: (message: string) => void
   /** 当前会话没有进行中的生成（仅 attach 接口会触发） */
@@ -148,6 +150,9 @@ function dispatchFrame(frame: string, handlers: StreamChatHandlers): void {
       break
     case 'answer_message':
       handlers.onAnswerMessage?.((payload as SsePayloadMap['answer_message']).message_id)
+      break
+    case 'suggestions':
+      handlers.onSuggestions?.((payload as SsePayloadMap['suggestions']).questions)
       break
     case 'done':
       handlers.onDone?.(payload as SsePayloadMap['done'])

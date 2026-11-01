@@ -14,6 +14,7 @@ const emit = defineEmits<{
   (e: 'feedback', messageId: string, helpful: boolean): void
   (e: 'stop'): void
   (e: 'retry', message: UiMessage): void
+  (e: 'suggest', question: string): void
 }>()
 
 /** 检索来源 → 展示标签 */
@@ -166,6 +167,20 @@ async function openReference(r: RagReference): Promise<void> {
         <span v-else class="msg__fb-done ke-muted">
           {{ message.helpful === 1 ? '已标记为有帮助' : '已标记为待改进' }}
         </span>
+      </div>
+
+      <!-- follow-up 建议问题：回答结束后展示，点击填入输入框 -->
+      <div v-if="!isUser && message.suggestions?.length && !message.streaming" class="msg__suggests">
+        <span class="msg__suggests-label">你可能还想问：</span>
+        <button
+          v-for="q in message.suggestions"
+          :key="q"
+          type="button"
+          class="msg__suggest-chip"
+          @click="emit('suggest', q)"
+        >
+          {{ q }}
+        </button>
       </div>
     </div>
   </article>
@@ -352,6 +367,23 @@ async function openReference(r: RagReference): Promise<void> {
     &:hover { border-color: var(--ke-brand-400); color: var(--ke-brand-600); }
   }
   &__fb-done { font-size: 12px; }
+
+  &__suggests {
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--ke-space-2);
+    margin-top: var(--ke-space-1);
+  }
+  &__suggests-label { font-size: 12px; color: var(--ke-gray-400); }
+  &__suggest-chip {
+    border: 1px solid var(--ke-gray-200); background: var(--ke-bg-card);
+    color: var(--ke-gray-600); border-radius: 999px; padding: 4px 12px;
+    font-size: 12px; cursor: pointer; line-height: 1.5;
+    transition: border-color var(--ke-duration-fast), color var(--ke-duration-fast),
+                background var(--ke-duration-fast);
+    &:hover {
+      border-color: var(--ke-brand-400); color: var(--ke-brand-600);
+      background: var(--ke-brand-50);
+    }
+  }
 }
 
 .ref-dialog {

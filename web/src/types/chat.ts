@@ -74,7 +74,7 @@ export interface ResultCard {
 /** SSE 事件名（与后端 SseEvent 对齐） */
 export type SseEventName =
   | 'progress' | 'conversation' | 'token' | 'reference' | 'card'
-  | 'answer_message' | 'done' | 'error' | 'idle'
+  | 'answer_message' | 'suggestions' | 'done' | 'error' | 'idle'
 
 /** 各事件 data 负载 */
 export interface SsePayloadMap {
@@ -84,6 +84,7 @@ export interface SsePayloadMap {
   reference: { references: RagReference[] }
   card: { card: ResultCard }
   answer_message: { message_id: string }
+  suggestions: { questions: string[] }
   done: { conversation_id: string; message_id: string }
   error: { message: string }
   idle: { conversation_id: string }

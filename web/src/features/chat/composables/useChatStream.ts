@@ -19,6 +19,8 @@ export interface SendHooks {
   onDone?: (conversationId: string) => void
   /** 会话 ID 一就绪即回调（新会话无需等回答结束即可写入地址栏） */
   onConversation?: (conversationId: string) => void
+  /** 回答结束后的 follow-up 建议问题 */
+  onSuggestions?: (questions: string[]) => void
 }
 
 /** 判定 AbortError（用户主动停止 vs 真实网络异常） */
@@ -83,6 +85,9 @@ export function useChatStream() {
           onAnswerMessage: (messageId) => {
             if (messageId) target.id = messageId
           },
+          onSuggestions: (questions) => {
+            hooks?.onSuggestions?.(questions)
+          },
           onDone: (payload) => {
             target.streaming = false
             activeConvId = payload?.conversation_id || activeConvId
@@ -139,6 +144,7 @@ export function useChatStream() {
         onReference: (references) => { resetForReplay(); target.references = references },
         onCard: (card) => { resetForReplay(); target.card = card },
         onAnswerMessage: (messageId) => { if (messageId) target.id = messageId },
+        onSuggestions: (questions) => { hooks?.onSuggestions?.(questions) },
         onDone: (payload) => {
           target.streaming = false
           hooks?.onDone?.(payload?.conversation_id ?? conversationId)

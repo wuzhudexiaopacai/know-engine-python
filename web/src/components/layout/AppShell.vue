@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
 import { fetchProfile, updateProfile, uploadAvatar } from '@/api/auth'
+import { getChatPreferences, updateChatPreferences } from '@/api/chat'
 import { useAuthStore } from '@/stores/auth'
 import { useTheme } from '@/composables/useTheme'
 import type { ProfileUpdatePayload } from '@/types/auth'
@@ -88,21 +89,45 @@ const profile = reactive({
   lockVersion: 0,
 })
 
+/** 长期记忆开关：用户偏好，关闭后不生成也不注入对话摘要 */
+const longTermMemory = ref(true)
+
 async function openProfile(): Promise<void> {
   profileOpen.value = true
   profileLoading.value = true
   try {
-    const p = await fetchProfile()
+    const [p, pref] = await Promise.all([fetchProfile(), getChatPreferences()])
     profile.name = p.name ?? ''
     profile.nickname = p.nickname ?? ''
     profile.motto = p.motto ?? ''
     profile.avatar = p.avatar ?? ''
     profile.lockVersion = p.lock_version
+    longTermMemory.value = pref.long_term_memory_enabled
   } catch {
     /* 拦截器已提示 */
   } finally {
     profileLoading.value = false
   }
+}
+
+/** 切换长期记忆：乐观更新 + 立即持久化，失败回滚 */
+async function onToggleLongTermMemory(value: boolean | string | number): Promise<void> {
+  const enabled = !!value
+  if (enabled === longTermMemory.value) return // 开关自身已同步过状态时跳过
+  longTermMemory.value = enabled
+  try {
+    await updateChatPreferences({ long_term_memory_enabled: enabled })
+    ElMessage.success(enabled ? '已开启长期记忆' : '已关闭长期记忆')
+  } catch {
+    longTermMemory.value = !enabled // 回滚
+  }
+}
+
+/** 点击设置行空白区也可切换；点在开关本体上时由开关自身处理，避免双重触发 */
+function onSettingRowClick(e: MouseEvent): void {
+  if (profileLoading.value) return
+  if ((e.target as HTMLElement).closest('.el-switch')) return
+  void onToggleLongTermMemory(!longTermMemory.value)
 }
 
 function beforeAvatarUpload(file: File): boolean {
@@ -272,6 +297,30 @@ async function saveProfile(): Promise<void> {
             />
           </el-form-item>
         </el-form>
+
+        <el-divider content-position="left">对话设置</el-divider>
+        <div
+          class="profile__setting"
+          role="switch"
+          :aria-checked="longTermMemory"
+          :aria-disabled="profileLoading"
+          tabindex="0"
+          aria-label="长期记忆"
+          @click="onSettingRowClick"
+          @keydown.space.prevent="onToggleLongTermMemory(!longTermMemory)"
+          @keydown.enter.prevent="onToggleLongTermMemory(!longTermMemory)"
+        >
+          <div class="profile__setting-text">
+            <span class="profile__setting-label">长期记忆</span>
+            <span class="profile__setting-desc">开启后将自动摘要历史对话，并在新会话中提供个性化建议</span>
+          </div>
+          <el-switch
+            :model-value="longTermMemory"
+            :disabled="profileLoading"
+            tabindex="-1"
+            @update:model-value="onToggleLongTermMemory"
+          />
+        </div>
       </div>
       <template #footer>
         <el-button :disabled="profileSaving" @click="profileOpen = false">取消</el-button>
@@ -443,6 +492,28 @@ async function saveProfile(): Promise<void> {
     justify-content: center;
     margin-bottom: var(--ke-space-4);
   }
+
+  &__setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ke-space-4);
+    cursor: pointer;
+    border-radius: var(--ke-radius-sm);
+    padding: var(--ke-space-2) var(--ke-space-2);
+    margin: 0 calc(-1 * var(--ke-space-2));
+    transition: background var(--ke-duration-fast);
+    &:hover { background: var(--ke-gray-50); }
+    &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 2px; }
+  }
+  &__setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  &__setting-label { font-size: 14px; color: var(--ke-gray-800); }
+  &__setting-desc { font-size: 12px; color: var(--ke-gray-400); }
   &__uploader :deep(.el-upload) {
     display: flex;
     flex-direction: column;

@@ -1,4 +1,4 @@
-import { del, get, post } from './http'
+import { del, get, post, put } from './http'
 import type { Conversation, ChatMessageRecord, PublicModel, ReferenceDetail } from '@/types/chat'
 
 /** 拉取会话列表；scope=all 仅管理员生效，可查看全部用户的会话 */
@@ -72,4 +72,26 @@ export function generateImage(payload: ImageGenRequest, signal?: AbortSignal): P
 /** 中断进行中的文生图：服务端停止轮询且不落库（避免中断后刷新又出现图片） */
 export function cancelImage(requestId: string): Promise<{ cancelled: boolean }> {
   return post<{ cancelled: boolean }>('/chat/image/cancel', { request_id: requestId })
+}
+
+/** 当前用户的对话偏好 */
+export interface ChatPreferences {
+  long_term_memory_enabled: boolean
+  memory_window_size: number
+  summary_round_interval: number
+}
+
+/** 获取当前用户对话偏好 */
+export function getChatPreferences(): Promise<ChatPreferences> {
+  return get<ChatPreferences>('/chat/preferences')
+}
+
+/** 更新当前用户对话偏好（仅传入字段生效） */
+export function updateChatPreferences(payload: Partial<ChatPreferences>): Promise<ChatPreferences> {
+  return put<ChatPreferences>('/chat/preferences', payload)
+}
+
+/** 获取基于用户记忆的新会话建议问题（3 条） */
+export function getChatSuggestions(): Promise<string[]> {
+  return get<string[]>('/chat/suggestions')
 }

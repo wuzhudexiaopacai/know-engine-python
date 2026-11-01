@@ -7,6 +7,7 @@ import { Picture, Paperclip, ArrowDown } from '@element-plus/icons-vue'
 import {
   listConversations, listMessages, deleteConversation, submitFeedback,
   generateImage, cancelImage, listChatModels, uploadChatImage,
+  getChatSuggestions,
 } from '@/api/chat'
 import { BizError } from '@/api/http'
 import type { Conversation, ChatMessageRecord, PublicModel } from '@/types/chat'
@@ -28,6 +29,12 @@ const messages = ref<UiMessage[]>([])
 const threadLoading = ref(false)
 const input = ref('')
 const useCache = ref(true)
+/** 新会话空态建议问题（基于用户记忆动态拉取） */
+const suggestions = ref<string[]>([
+  'Redis 的持久化方案怎么选？',
+  '微服务下的分布式事务怎么处理？',
+  'Vue 项目构建太慢怎么优化？',
+])
 /** 用户可选模型（管理员在后台配置，此处只拿展示名） */
 const models = ref<PublicModel[]>([])
 const selectedModelId = ref<number | null>(null)
@@ -110,13 +117,6 @@ const composerPlaceholder = computed(() => {
   return '输入问题，Enter 发送，Shift + Enter 换行'
 })
 
-/** 建议提问（空态引导，点击填入输入框） */
-const SUGGESTIONS = [
-  'Redis 的持久化方案怎么选？',
-  '微服务下的分布式事务怎么处理？',
-  'Vue 项目构建太慢怎么优化？',
-]
-
 let seq = 0
 function tempId(): string {
   return `local-${Date.now()}-${seq++}`
@@ -191,6 +191,16 @@ async function loadModels(): Promise<void> {
   }
 }
 
+/** 拉取新会话建议问题（基于用户记忆） */
+async function loadSuggestions(): Promise<void> {
+  try {
+    const list = await getChatSuggestions()
+    if (Array.isArray(list) && list.length) suggestions.value = list
+  } catch {
+    /* 拦截器已提示，保留兜底建议 */
+  }
+}
+
 /** 管理员切换“全部会话”范围；切回自己时若正在看他人会话则清空 */
 async function onToggleAll(value: boolean): Promise<void> {
   viewAll.value = value
@@ -248,6 +258,7 @@ function createConversation(): void {
   input.value = ''
   pendingImages.value = []
   syncUrl(null)
+  void loadSuggestions()
 }
 
 async function removeConversation(id: string): Promise<void> {
@@ -300,6 +311,9 @@ async function ask(question: string, reuseTarget?: UiMessage,
         if (!convId || activeId.value) return
         activeId.value = convId
         syncUrl(convId)
+      },
+      onSuggestions: (questions) => {
+        target.suggestions = questions
       },
       onDone: (convId) => {
         if (convId) {
@@ -484,7 +498,7 @@ async function runImageGeneration(): Promise<void> {
 
 onMounted(async () => {
   document.addEventListener('click', onDocClick)
-  await Promise.all([loadConversations(), loadModels()])
+  await Promise.all([loadConversations(), loadModels(), loadSuggestions()])
   const routeId = typeof route.params.conversationId === 'string' && route.params.conversationId
     ? route.params.conversationId : null
   if (routeId) {
@@ -537,7 +551,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           <h2 class="chat__welcome-title">有什么可以帮你？</h2>
           <p class="chat__welcome-sub">基于企业知识库的智能问答，答案附引用溯源</p>
           <div class="chat__chips">
-            <button v-for="s in SUGGESTIONS" :key="s" class="chat__chip ke-enter-up" @click="useSuggestion(s)">
+            <button v-for="s in suggestions" :key="s" class="chat__chip ke-enter-up" @click="useSuggestion(s)">
               {{ s }}
             </button>
           </div>
@@ -551,6 +565,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           @feedback="onFeedback"
           @retry="onRetry"
           @stop="stop"
+          @suggest="useSuggestion"
         />
 
         <!-- 回到最新消息：上滑看历史时出现，点击瞬时滚到底部 -->

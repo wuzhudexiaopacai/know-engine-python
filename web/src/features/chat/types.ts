@@ -22,6 +22,8 @@ export interface UiMessage {
   helpful?: number | null
   /** 生成该答案所用的模型展示名 */
   modelName?: string | null
+  /** 回答结束后的 follow-up 建议问题（点击填入输入框） */
+  suggestions?: string[]
   /** 管道级错误提示 */
   error?: string
   createdAt: number
