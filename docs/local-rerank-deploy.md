@@ -731,6 +731,439 @@ print(len(final))                    # 0 → 说明是门控丢的，不是召�
 
 ---
 
+### 问题 10：「题目」和「内容」被切成两段，引用只有标题没有正文（切片层）
+
+> 前面 9 个问题都发生在**检索阶段**，这一个发生在更前面——**文档入库时的切片阶段**。
+> 它比问题 9 更根本：检索端只能"补回已经存下来的东西"，如果切片时就把题目和答案拆开、
+> 或者把标题只写进 metadata 不进正文，后面无论怎么调精排都救不回来。
+
+#### 10.1 现象
+
+用户上传了一份 `面试题-整理版.md`（非标准排版：题目独占一行，答案用 `1. / 2. / 3.` 分条写在下面）。
+切片预览弹窗里显示 **151 段**，内容确实都在，但实际问答时出现三种典型症状：
+
+1. 搜到的引用**只有题目**（如「Spring 的事务相关」），下面是下一段的开头，看不到答案；
+2. 问「Spring 事务传播行为」时，命中的段落标题是 `1. 事务传播行为有七种，REQUIRED 是默认……`
+   ——一整句答案被当成了标题；
+3. 问「面试时回答问题的思路」，命中的分段只有一句「整体思路：总分总」，
+   真正的三步答题法被切到了相邻的另一段。
+
+用户在页面上看到的就是：**左边预览明明有内容，右边回答却说"资料不足"**。
+第一反应通常是"检索坏了"，但真正坏掉的是**切片**。
+
+#### 10.2 出问题的流程：上传 → 转换 → 切片 → 向量化 → 检索
+
+文档处理是事件驱动的三阶段流水线，问题出在**阶段二「切片」**：
+
+```text
+上传 DocumentUploaded
+   │
+   ▼
+① 转换 _convert_pipeline()      PDF/Word → Markdown（图片描述等）              ✅ 正常
+   │
+   ▼
+② 切片 _split_pipeline()        MarkdownHeaderSplitter.split()                 ❌ 问题在这里
+   │    ├─ _reflow()             断行修复（把 PDF 的硬换行合回自然段）
+   │    ├─ _parse_sections()     识别标题、维护标题栈、生成「父 > 子」路径
+   │    │    └─ _heading_of()    ★ 标题识别：编号标题被误判
+   │    ├─ _merge_lead_sections() ★ 只有标题的章节被丢掉 / 被错误合并
+   │    ├─ _compose()            ★ 标题没有注入正文（旧版缺失）
+   │    └─ 全局 order 重排        ★ 旧版按章节序号，父子段共用同一个 order
+   │
+   ▼
+③ 向量化 _embedding_pipeline()  embedding + 写入 ES                            ✅ 正常
+   │
+   ▼
+检索 retrieve() → 精排 aggregate() → 生成回答                                  ✅ 正常（但上游数据已残缺）
+```
+
+对应代码位置：
+
+| 环节 | 文件 | 函数 |
+| --- | --- | --- |
+| 切片入口（流水线阶段二） | [pipeline.py](file:///d:/code/rag/know-engine-python/app/modules/document/pipeline.py) | `_split_pipeline()` |
+| 标题识别 / 章节解析 / 合并 | [splitters.py](file:///d:/code/rag/know-engine-python/app/modules/document/splitters.py) | `_reflow()` / `_heading_of()` / `_parse_sections()` / `_merge_lead_sections()` |
+| 标题注入正文 | [splitters.py](file:///d:/code/rag/know-engine-python/app/modules/document/splitters.py) | `_compose()` |
+| 短分段邻接兜底 | [retrieval.py](file:///d:/code/rag/know-engine-python/app/modules/rag/retrieval.py) | `_expand_short_neighbors()` |
+| 重切后缓存失效 | [pipeline.py](file:///d:/code/rag/know-engine-python/app/modules/document/pipeline.py) | `_invalidate_caches_after_resplit()` |
+
+#### 10.3 为什么会有这个坑：四个原因叠加
+
+**原因 1：编号标题兜底正则，把「列表项」当成了「标题」**
+
+`#` 标题是标准 Markdown 写法，但 PDF / Word 转出来的文本经常没有 `#`，
+所以切片器里加了一条兜底规则：`1. xxx`、`1.1 xxx`、`第X章`、`一、` 也当标题。
+问题在于——**`1. xxx` 和 Markdown 有序列表的写法一模一样**：
+
+```text
+### ==与equals的区别是什么     ← 真正的标题（# 标题）
+1. ==是一个运算符，equals 是 Object 类的方法    ← 答案的第 1 条
+2. 用于基本类型的变量比较时，比较的是值          ← 答案的第 2 条
+```
+
+旧规则会把 `1.` 和 `2.` 这两行都提成"标题"，于是：
+
+- `### ==与equals的区别是什么` 这一节**没有正文**（正文被下一条"标题"截走了）；
+- 答案被拆成 `基础 > 1. ==是一个运算符…`、`基础 > 2. 用于基本类型…` 两个分段。
+
+这就是「题目在上一段、内容在下一段」的直接来源。
+
+**原因 2：标题只写进 metadata，没有进入正文**
+
+旧版入库时，`title` 只放在 `metadata.title` 里，分段 `text` 只有正文：
+
+```python
+# 旧版：text 只有正文，title 只存元数据
+chunks.append(Chunk(body, {**meta, MetaKey.TITLE: title}))
+```
+
+而检索时**向量只编码 `text`，ES 全文也只检索 `text`**（`title` 是 keyword 字段）。
+结果就是：一个只写了「REQUIRED：默认，加入外层事务」的分段，
+在向量和 BM25 里都看不到「Spring 事务」这个主题词，**语义直接丢失**。
+
+**原因 3：「只有标题没有正文」的章节被静默丢弃**
+
+旧版 `_parse_sections` 在 flush 时有 `if not body: return`（空正文不落段）。
+上面那种被 `1.` 截走正文的章节，就只剩下一个标题，随后**整节消失**，
+用户看到的引用自然"只有题目"。
+
+**原因 4：父子分段的 `order` 不唯一，邻接取段会一次捞出一整章**
+
+超长章节会拆成「1 个父分段（不参与向量检索）+ N 个子分段」。
+旧版 `order` 用的是**章节序号**，于是同一章节的父段和所有子段共享同一个 `order`。
+检索端想按 `order ± 1` 取相邻段时，`between(min-1, max+1)` 会把整章一起捞出来。
+
+#### 10.4 修复前的关键代码
+
+[拼图 1] 编号标题识别（旧版，`splitters.py`）：
+
+```python
+# 旧版：最后一条 [0-9]+[.、．]\s 与 Markdown 有序列表完全同形
+_NUMBERED_RE = re.compile(
+    r"^(?:第[一二三四五六七八九十百千0-9]+[章节部分篇步]"
+    r"|[一二三四五六七八九十]+、"
+    r"|[0-9]+(?:\.[0-9]+)+[.、．]?"
+    r"|[0-9]+[.、．]\s)"
+)
+
+@staticmethod
+def _heading_of(line: str) -> tuple[int, str] | None:
+    ...
+    if not _NUMBERED_RE.match(text):      # ❌ "1. 答案第一条" 也会进来
+        return None
+    ...
+    level = 2                             # ❌ 单级 "1." 与 "1.4" 都算 2 层
+    if text.startswith("第"):
+        level = 1
+    else:
+        dots = text.split(maxsplit=1)[0].count(".") if " " in text else text.count(".")
+        level = min(dots + 1, 6) if dots else 2
+    return level, text
+```
+
+[拼图 2] 分段构造（旧版，`split()`）：
+
+```python
+for order, (title_path, body) in enumerate(sections):
+    meta = {**base_meta, MetaKey.TITLE: title_path or doc_title,
+            MetaKey.ORDER: order}          # ❌ 章节序号，父子段不唯一
+    ...
+    chunks.append(Chunk(body, {**meta, MetaKey.CHUNK_ID: next_id_str()}))
+    #                   ↑ 只有正文，标题没进 text
+```
+
+#### 10.5 修复后的代码（分五层）
+
+**第 1 层：编号标题分「强 / 弱」两级置信度**
+
+```python
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+# 编号标题（PDF/Word 转换产物常没有 # 标记）分两级置信度：
+#   强：第X章 / 一、 / 1.1 多级编号 —— 与 Markdown 有序列表写法不冲突，任何文档都认
+#   弱：单级 "1. xxx" —— 与有序列表完全相同，只有整篇没有 # 标题时才可能是标题
+_STRONG_NUMBERED_RE = re.compile(
+    r"^(?:第[一二三四五六七八九十百千0-9]+[章节部分篇步]"
+    r"|[一二三四五六七八九十]+、"
+    r"|[0-9]+(?:\.[0-9]+)+[.、．]?)"
+)
+_WEAK_NUMBERED_RE = re.compile(r"^[0-9]+[.、．]\s")
+```
+
+关键判断：**整篇有没有 `#` 标题，决定了 `1. xxx` 是标题还是列表**。
+文档级判断比逐行猜测可靠得多——用了 `#` 分节的文档，`1.` 一定是列表。
+
+```python
+def _reflow(self, text: str) -> str:
+    # 先判定整篇是否使用 # 标题：决定单级编号 "1. xxx" 按标题还是列表处理
+    self._has_markdown_heading = bool(
+        re.search(r"^\s*#{1,6}\s+", text, re.MULTILINE))
+    ...
+
+def _heading_of(self, line: str) -> tuple[int, str] | None:
+    m = _HEADING_RE.match(line)
+    if m:
+        return len(m.group(1)), m.group(2).strip()
+    text = line.strip()
+    strong = _STRONG_NUMBERED_RE.match(text)
+    weak = (not self._has_markdown_heading
+            and _WEAK_NUMBERED_RE.match(text))
+    if not (strong or weak):
+        return None
+    if len(text) > _HEADING_MAX_LEN or any(p in text for p in "。！？"):
+        return None
+    if text.endswith(_SENT_END):
+        return None
+    return self._heading_level(text), text
+```
+
+**第 2 层：编号标题的层级修正**
+
+`1. 基础概念` 和 `1.4 分布式事务产生的场景` 如果都算第 2 层，
+`1.4` 就成了 `1.` 的**兄弟**而不是子节，标题路径会丢掉父章节。
+现在单级数字算第 1 层：
+
+```python
+@staticmethod
+def _heading_level(text: str) -> int:
+    """编号标题层级：第X章=1，单级 1.=1，1.4=2，1.4.1=3，一、=2。"""
+    if text.startswith("第"):
+        return 1
+    token = text.split(maxsplit=1)[0]
+    stem = token.rstrip("。．.、")
+    if stem.isdigit():
+        return 1
+    dots = stem.count(".")
+    return min(dots + 1, 6) if dots else 2
+```
+
+效果：路径从 `1.4 分布式事务产生的场景` 变成
+`1. 基础概念 > 1.4 分布式事务产生的场景`。
+
+**第 3 层：标题注入正文**
+
+```python
+@staticmethod
+def _compose(title: str, body: str) -> str:
+    """把标题路径前置到正文。
+
+    标题原来只存 metadata：向量只编码正文、ES 全文只检索 text 字段，
+    导致"这段内容属于 Spring 事务"的语义在检索时完全丢失。
+    前置后标题同时进入向量与 BM25，正文单独成段也能被主题词召回。
+    """
+    t = (title or "").strip()
+    b = (body or "").strip()
+    if not t or not b or b.startswith(t):
+        return b
+    return f"{t}\n{b}"
+```
+
+落库的 `text` 变成：
+
+```text
+Spring 事务 > 事务传播行为
+REQUIRED：默认，加入外层事务。
+```
+
+引用弹窗里标题会重复一次，这是**有意的语义冗余**——宁可重复，也不能让分段丢主题。
+
+**第 4 层：合并规则（这里踩过一次坑，务必看清）**
+
+第一版修复写得很激进：只要正文短于 40 字就并入下一节。
+结果把 `## 事务传播行为` 下面 **20 字的正确答案**并进了 `## 隔离级别`，
+标题路径变成 `Spring 事务 > 隔离级别`，**两个知识点混成一段**——比原来更糟。
+
+最终版按"证据"分级合并，只处理两种情况：
+
+```python
+def _merge_lead_sections(self, sections):
+    merged, pending = [], []
+    for path, heading, body in sections:
+        content = body.strip()
+        # 情况 A：只有标题没有正文 → 题目与内容被切开，把标题文本挂到下一节
+        if not content:
+            if heading:
+                pending.append(heading)
+            continue
+        # 情况 B：标题前的游离短文本（单独一行的题目、过渡语）→ 并入下一节
+        #          有标题的章节即使是短答案也保留，避免把两个知识点混在一起
+        if not heading and len(content) < self.min_lead_chars:
+            pending.append(content)
+            continue
+        if pending:
+            content = "\n\n".join(pending) + "\n\n" + content
+            pending = []
+        merged.append((path, content))
+    if pending:
+        merged.append((last_path, "\n\n".join(pending)))
+    return merged
+```
+
+一句话记住：**空正文一定合并，短正文要看有没有标题**。
+
+**第 5 层：全局连续 order + 父/子分段都带标题**
+
+```python
+# 全局连续序号：父子分段各自唯一，检索侧才能按 order ±1 精确取相邻段
+# （按章节序号时，同一超长章节的所有子分段共享一个 order，取邻居会一次捞出整章）
+for i, c in enumerate(chunks):
+    c.metadata[MetaKey.ORDER] = i
+```
+
+超长章节拆父/子分段时，父段和每个子段都用 `_compose(title, ...)`：
+
+```python
+def _split_oversized(self, body: str, meta: dict, title: str) -> list[Chunk]:
+    for part in self._split_parents(body):
+        parent_id = next_id_str()
+        result.append(Chunk(self._compose(title, part), {
+            **meta, MetaKey.CHUNK_ID: parent_id, MetaKey.SKIP_EMBEDDING: 1}))
+        blocks = self._aggregate_blocks(part)
+        result.extend(Chunk(self._compose(title, b), {
+            **meta, MetaKey.CHUNK_ID: next_id_str(),
+            MetaKey.PARENT_CHUNK_ID: parent_id, MetaKey.SKIP_EMBEDDING: 0, ...}) ...)
+```
+
+这样无论回溯到父段还是子段，都自带主题。
+
+#### 10.6 检索层兜底：短分段补前后段（P1）
+
+切片修好只能保证**新文档**正确；**已经入库的旧数据**不可能立刻全部重切。
+所以在检索端加了一层兜底：命中分段过短时，补同文档 `order ± 1`：
+
+```python
+_NEIGHBOR_MIN_CHARS = 200      # 命中分段正文短于该长度才补邻居
+_NEIGHBOR_MAX_CHARS = 900      # 补全后的分段长度上限（避免把整章塞进上下文）
+
+async def _expand_short_neighbors(chunks):
+    ...
+    rows = (await session.execute(select(
+        KnowledgeSegment.chunk_order, KnowledgeSegment.text,
+        KnowledgeSegment.chunk_id).where(
+        KnowledgeSegment.document_version == version,
+        KnowledgeSegment.deleted == 0,
+        KnowledgeSegment.skip_embedding == 0,
+        KnowledgeSegment.chunk_order.between(min(orders) - 1, max(orders) + 1)))).all()
+    ...
+```
+
+在 `retrieve()` 里，父子回溯之后、精排之前调用：
+
+```python
+# 3. 邻接兜底：短分段补同文档前后段（标题与正文被切开时仍能得到完整上下文）
+chunks = await _expand_short_neighbors(chunks)
+```
+
+注意两个约束：
+
+- 只处理**没有父分段**的普通分段（父段回溯后本身已完整，再补邻居会重复）；
+- 相邻段已经在结果集里就跳过，补完截断到 900 字，避免上下文被撑爆。
+
+#### 10.7 修复后的效果（真实数据）
+
+用新切片器对 4 个存量文档重新切片 + 重新向量化：
+
+| 文档 | 修复前分段数 | 修复后分段数 | 说明 |
+| --- | --- | --- | --- |
+| 面试题-整理版.md | 151 | **107** | 去掉被误判成标题的答案条目，题目与答案合回同一段 |
+| 分布式事务专题-v1.1.pdf | 178 | **175** | 标题路径补回父章节（`1. 基础概念 > 1.4 …`） |
+| README.md | 25 | **23** | 无内容丢失 |
+| 人物传记.docx | 9 | **9** | 父子分段正常 |
+
+以「==与equals的区别是什么」为例，修复前后对比如下（示意）：
+
+```text
+修复前（3 段，题目与答案分离）
+[段 1] title=基础 > ==与equals的区别是什么    text=基础 > ==与equals的区别是什么
+[段 2] title=基础 > 1. ==是一个运算符…        text=2. 用于基本类型的变量比较时…
+[段 3] title=基础 > 3. 用于引用类型时…         text=基础 >  这是Java提供的三个关键字…
+
+修复后（1 段，题目 + 完整答案）
+[段 1] title=基础 > ==与equals的区别是什么
+       text=基础 > ==与equals的区别是什么
+            1. ==是一个运算符，equals 是 Object 类的方法
+            2. 用于基本类型的变量比较时，比较的是值
+            3. 用于引用类型时，比较的是地址
+```
+
+#### 10.8 复测：检索端结果
+
+重切后对同一批问题做端到端复测（召回 → 精排 → 邻接扩展）：
+
+| 提问 | 召回 → 精排 | 邻接扩展 | 结果 |
+| --- | --- | --- | --- |
+| 讲一下mysql | 29 → 3 | 3 段 | 头条为「MySQL > 谈谈你对sql的优化的经验」 |
+| Spring 事务传播行为 | 28 → 1（logit 8.46） | 2 段 | 正是「框架 > Spring事务传播行为有几种」 |
+| 事务隔离级别 | 27 → 2 | 2 段 | 含「MySQL > 事务隔离级别」 |
+| 分布式事务产生的场景 | 27 → 4 | 7 段 | 头条路径已补全父章节 |
+| 面试时回答问题的思路 | 29 → 1 | 9 段 | 命中「前言 > 回答思路」，并补全三步答题法 |
+| 聂德祥生平简介 | 23 → 1 | 7 段 | 命中 26 字的短分段，由邻接扩展补全 |
+| 倒车入库（知识库无此内容） | 28 → 0 | — | 正确判定无相关资料 |
+
+注意：修复后条数比上一轮（问题 9 的复测）**变少**了，这是正常的——
+分段从 151 降到 107，原来的多个碎片被合并成更完整的段落，
+**单条信息量变大、条数自然变少**，不是召回变差。
+
+#### 10.9 存量文档必须重建（很重要）
+
+切片代码改了，**旧数据不会自动变好**。必须对每个版本重跑「切片 → 向量化」：
+
+1. 页面操作：文档列表 → 版本抽屉 → 修改切片配置 → 保存并重新切片；
+2. 接口操作：`POST /api/document/{doc_id}/resplit?version_id=xxx`；
+3. 内部入口：`_split_pipeline(doc_id, version_id, force=True)` + `_embedding_pipeline(...)`。
+
+重建过程中会自动做两件事：
+
+```python
+# 2. 清理旧分段（重新切片场景：先删旧分段 + 向量记录）
+await _purge_segments(doc_id, version_id)
+# 重切会生成全新 chunk_id：分段缓存和引用本文档的 QA 语义缓存全部失效，
+# 否则用户仍会命中带旧引用的陈旧答案
+await _invalidate_caches_after_resplit(doc_id)
+```
+
+```python
+async def _invalidate_caches_after_resplit(doc_id: int) -> None:
+    """重新切片后失效缓存：分段 L1/L2 缓存 + 引用该文档的 QA 语义缓存。"""
+    from app.modules.document.service import invalidate_doc_cache
+    from app.modules.qa_cache import service as qa_service
+    await invalidate_doc_cache(doc_id)
+    await qa_service.invalidate_by_document(doc_id, detail=f"文档 {doc_id} 重新切片")
+```
+
+重建后必须核对：MySQL 分段数 = ES 写入条数，且 `pending_vector` 只等于父分段数量。
+
+> 副作用要提前知道：重切后 `chunk_id` 全部换新，
+> 历史聊天记录里已保存的引用快照无法再按旧 id 解析（QA 缓存已失效，不会返回旧答案）。
+
+#### 10.10 排查三步法
+
+遇到「预览有内容、回答说没有」，按顺序查：
+
+1. **看切片预览的 order / 长度 / 标题**：标题是不是一整句答案？有没有正文为空的段？
+2. **用原文里的主题词直接搜**（如把题目原文粘进搜索框）：
+   能搜到说明是语义/门控问题，搜不到说明是切片或入库问题；
+3. **看日志**（各层剩多少条一目了然）：
+
+| 日志 | 含义 |
+| --- | --- |
+| `stage_chunked segments=..` | 本版本切出多少段（与预览对照） |
+| `retrieve_done chunks=.. hits=..` | 召回命中多少（hits=0 说明索引里没有） |
+| `neighbor_expanded expanded=.. total=..` | 有多少短分段被邻接扩展补全 |
+| `rerank_done kept=.. dropped=..` | 精排门控后剩多少 |
+
+#### 10.11 这个坑的通用教训
+
+1. **切片是上游，检索是下游**。下游只能补回上游已经存下来的东西；
+   "题目与内容分离"必须在切片阶段解决，检索只能兜底。
+2. **同名语法要按文档级判断**。`1. xxx` 在 PDF 里可能是标题，在 Markdown 里就是列表；
+   用"整篇有没有 `#`"来区分，比逐行猜靠谱。
+3. **标题必须进正文**。Embedding 和 BM25 只读 `text`，放在 metadata 里的字段等于没有。
+4. **合并要分级**：空正文必合；短正文要看有没有标题，否则会把两个知识点混成一段。
+5. **分段序号必须全局唯一连续**，否则按 `order ± 1` 取邻居会失效。
+6. **改切片规则 = 要重建索引**。代码上线只是第一步，存量数据不重切等于没修。
+
+---
+
 ## 九、实测结果汇总
 
 | 提问 | 修复前 | 修复后 |
