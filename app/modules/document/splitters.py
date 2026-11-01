@@ -41,13 +41,15 @@ class TableMode(StrEnum):
 # Markdown 标题切分（SMART / TITLE）
 # ==================================================================
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
-# PDF/Word 转换产物常没有 # 标记，用编号标题补足（第X章 / 1. / 1.1 / 一、）
-_NUMBERED_RE = re.compile(
+# 编号标题（PDF/Word 转换产物常没有 # 标记）分两级置信度：
+#   强：第X章 / 一、 / 1.1 多级编号 —— 与 Markdown 有序列表写法不冲突，任何文档都认
+#   弱：单级 "1. xxx" —— 与有序列表完全相同，只有整篇没有 # 标题时才可能是标题
+_STRONG_NUMBERED_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百千0-9]+[章节部分篇步]"
     r"|[一二三四五六七八九十]+、"
-    r"|[0-9]+(?:\.[0-9]+)+[.、．]?"
-    r"|[0-9]+[.、．]\s)"
+    r"|[0-9]+(?:\.[0-9]+)+[.、．]?)"
 )
+_WEAK_NUMBERED_RE = re.compile(r"^[0-9]+[.、．]\s")
 # 列表项/表格行不参与断行合并
 _LIST_RE = re.compile(r"^(?:[-*+]\s|[0-9]+[.、)]\s)")
 # 句末标点：命中即视为自然段结束
@@ -55,6 +57,8 @@ _SENT_END = ("。", "！", "？", "；", "：", ".", "!", "?", ";", ":", "…")
 _FENCE_RE = re.compile(r"^(```|~~~)")
 # ASCII 字符画（框线/制表符）：这些行不能被 reflow 合并换行，否则对齐全毁
 _BOX_CHARS = set("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┏┓┗┛┣┫┳┻╋·•")
+# 编号标题最大长度：超过这个长度的"1. xxx"基本是答案正文而不是标题
+_HEADING_MAX_LEN = 40
 
 
 def _is_box_art(line: str) -> bool:
@@ -87,9 +91,14 @@ class MarkdownHeaderSplitter:
         self.title_level = title_level   # 0 = 不限制层级
         # 父分段封顶：整篇章节（如无标题的 PDF）不能作为一个 7 万字的父分段塞进模型
         self.parent_max_size = max(chunk_size * 5, 3000)
+        # 标题下正文短于该长度时，视为"只有题目/只有过渡语"，并入下一章节
+        self.min_lead_chars = 40
+        # 整篇是否使用 Markdown # 标题（每次 split 时由 _reflow 判定）
+        self._has_markdown_heading = False
 
     def split(self, text: str, base_meta: dict) -> list[Chunk]:
         sections = self._parse_sections(self._reflow(text))
+        sections = self._merge_lead_sections(sections)
         chunks: list[Chunk] = []
         for order, (title_path, body) in enumerate(sections):
             body = body.strip()
@@ -99,10 +108,30 @@ class MarkdownHeaderSplitter:
             title = title_path or base_meta.get(MetaKey.TITLE) or ""
             meta = {**base_meta, MetaKey.TITLE: title, MetaKey.ORDER: order}
             if len(body) <= self.chunk_size:
-                chunks.append(Chunk(body, {**meta, MetaKey.CHUNK_ID: next_id_str()}))
+                chunks.append(Chunk(self._compose(title, body),
+                                    {**meta, MetaKey.CHUNK_ID: next_id_str()}))
             else:
-                chunks.extend(self._split_oversized(body, meta, order))
+                chunks.extend(self._split_oversized(body, meta, title))
+        # 全局连续序号：父子分段各自唯一，检索侧才能按 order ±1 精确取相邻段
+        # （按章节序号时，同一超长章节的所有子分段共享一个 order，取邻居会一次捞出整章）
+        for i, c in enumerate(chunks):
+            c.metadata[MetaKey.ORDER] = i
         return chunks
+
+    @staticmethod
+    def _compose(title: str, body: str) -> str:
+        """把标题路径前置到正文。
+
+        标题原来只存 metadata：向量只编码正文、ES 全文只检索 text 字段，
+        导致"这段内容属于 Spring 事务"的语义在检索时完全丢失。
+        前置后标题同时进入向量与 BM25，正文单独成段也能被主题词召回。
+        引用弹窗会看到标题重复一次，这是有意的语义冗余。
+        """
+        t = (title or "").strip()
+        b = (body or "").strip()
+        if not t or not b or b.startswith(t):
+            return b
+        return f"{t}\n{b}"
 
     # ---------------- 断行修复 ----------------
     def _reflow(self, text: str) -> str:
@@ -112,6 +141,9 @@ class MarkdownHeaderSplitter:
         ASCII 字符画（框线图）单独用代码块包裹，保留换行与空格对齐。
         已有良好空行分段的 Markdown 不受影响（空行仍触发 flush）。
         """
+        # 先判定整篇是否使用 # 标题：决定单级编号 "1. xxx" 按标题还是列表处理
+        self._has_markdown_heading = bool(
+            re.search(r"^\s*#{1,6}\s+", text, re.MULTILINE))
         out: list[str] = []
         buf: list[str] = []
         in_fence = False
@@ -168,37 +200,68 @@ class MarkdownHeaderSplitter:
         flush_box()
         return "\n".join(out)
 
-    @staticmethod
-    def _heading_of(line: str) -> tuple[int, str] | None:
-        """识别 Markdown # 标题与编号标题，返回 (层级, 标题)。"""
+    def _heading_of(self, line: str) -> tuple[int, str] | None:
+        """识别 Markdown # 标题与编号标题，返回 (层级, 标题)。
+
+        编号标题只是 PDF/Word 转换产物的兜底，必须"像标题"才认：
+        - 强模式（第X章 / 一、 / 1.1）不与 Markdown 有序列表冲突，任何文档都启用；
+        - 弱模式（单级 "1. xxx"）与有序列表写法完全一致：文档里已有 # 标题时，
+          说明作者用 # 分节，"1. xxx" 就一定是列表项/答案步骤，不能当标题。
+          否则 Q&A 文档里 `1. 一句话概括……` 会被提成标题，把题目与内容切开。
+        另外仍要求行短、句中没有句号、不以句末标点结尾。
+        """
         m = _HEADING_RE.match(line)
         if m:
             return len(m.group(1)), m.group(2).strip()
-        if _NUMBERED_RE.match(line):
-            text = line.strip()
-            level = 2
-            if text.startswith("第"):
-                level = 1
-            else:
-                dots = text.split(maxsplit=1)[0].count(".") if " " in text else text.count(".")
-                level = min(dots + 1, 6) if dots else 2
-            return level, text
-        return None
+        text = line.strip()
+        strong = _STRONG_NUMBERED_RE.match(text)
+        weak = (not self._has_markdown_heading
+                and _WEAK_NUMBERED_RE.match(text))
+        if not (strong or weak):
+            return None
+        if len(text) > _HEADING_MAX_LEN or any(p in text for p in "。！？"):
+            return None
+        if text.endswith(_SENT_END):
+            return None
+        return self._heading_level(text), text
+
+    @staticmethod
+    def _heading_level(text: str) -> int:
+        """编号标题层级：第X章=1，单级 1.=1，1.4=2，1.4.1=3，一、=2。
+
+        单级数字必须算第 1 层：`1. 基础概念` 与 `1.4 场景` 如果都算 2 层，
+        `1.4` 就成了 `1.` 的兄弟而不是子节，标题路径会丢掉父章节。
+        """
+        if text.startswith("第"):
+            return 1
+        token = text.split(maxsplit=1)[0]
+        stem = token.rstrip("。．.、")
+        if stem.isdigit():
+            return 1
+        dots = stem.count(".")
+        return min(dots + 1, 6) if dots else 2
 
     # ---------------- 章节解析 ----------------
-    def _parse_sections(self, text: str) -> list[tuple[str, str]]:
-        """扫描行 → [(标题路径, 正文)]。维护标题栈生成层级路径。"""
+    def _parse_sections(self, text: str) -> list[tuple[str, str, str]]:
+        """扫描行 → [(标题路径, 标题原文, 正文)]。维护标题栈生成层级路径。
+
+        标题原文单独返回：只有标题没有正文的章节不会被静默丢弃，
+        而是由 _merge_lead_sections 并入下一章节，保留主题词。
+        """
         lines = text.splitlines()
         heading_stack: list[tuple[int, str]] = []   # (level, title)
-        sections: list[tuple[str, str]] = []
+        sections: list[tuple[str, str, str]] = []
         buf: list[str] = []
         in_fence = False
 
-        def flush(path: str):
-            if buf and any(x.strip() for x in buf):
-                sections.append((path, "\n".join(buf)))
+        def flush(path: str, heading: str):
+            body = "\n".join(buf)
+            # 有正文或标题才记录：文档开头的空缓冲（无标题无正文）不入段
+            if body.strip() or heading:
+                sections.append((path, heading, body))
 
         current_path = ""
+        current_heading = ""
         for line in lines:
             if _FENCE_RE.match(line.strip()):
                 in_fence = not in_fence
@@ -210,34 +273,71 @@ class MarkdownHeaderSplitter:
                 if self.title_level and level > self.title_level:
                     buf.append(line)
                     continue
-                flush(current_path)
+                flush(current_path, current_heading)
                 buf.clear()
                 # 出栈至当前层级，形成祖先链
                 while heading_stack and heading_stack[-1][0] >= level:
                     heading_stack.pop()
                 heading_stack.append((level, title))
                 current_path = " > ".join(t for _, t in heading_stack)
+                current_heading = title
             else:
                 buf.append(line)
-        flush(current_path)
+        flush(current_path, current_heading)
         return sections
 
+    def _merge_lead_sections(self, sections: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+        """把"只有标题"或正文极短的章节并入下一章节。
+
+        非标准文档常见两种形态：
+        1. 题目单独一行、答案从下一节开始（标题与正文被切开）；
+        2. 标题后只有一句过渡语（"下面介绍一下"），真正的正文在下一节。
+        这类章节单独成段会产生"只有题目没有内容"的引用，检索出来也无法作答。
+
+        合并时把原标题文本写进正文：即使下一节换了标题，主题词也不会丢。
+        末尾没有后继章节时保留原样，不做丢弃。
+        """
+        merged: list[tuple[str, str]] = []
+        pending: list[str] = []
+        last_path = ""
+        for path, heading, body in sections:
+            last_path = path
+            content = body.strip()
+            # 只有标题没有正文 → 题目与内容被切开，并入下一节
+            if not content:
+                if heading:
+                    pending.append(heading)
+                continue
+            # 标题前的游离短文本（如单独一行的题目、过渡语）→ 并入下一节；
+            # 有标题的章节即使是短答案也保留，避免把两个不同知识点混在一段
+            if not heading and len(content) < self.min_lead_chars:
+                pending.append(content)
+                continue
+            if pending:
+                content = "\n\n".join(pending) + "\n\n" + content
+                pending = []
+            merged.append((path, content))
+        if pending:
+            merged.append((last_path, "\n\n".join(pending)))
+        return merged
+
     # ---------------- 超长章节：父 + 子 ----------------
-    def _split_oversized(self, body: str, meta: dict, order: int) -> list[Chunk]:
+    def _split_oversized(self, body: str, meta: dict, title: str) -> list[Chunk]:
         """父分段全文（skipEmbedding=1）+ 段落聚合子分段（携带父子/兄弟链）。
 
         超长章节（常见于无标题的 PDF 整篇正文）按 parent_max_size 再切分为多个父分段，
         避免单个父分段达到几万字、检索命中后整篇注入 Prompt 挤爆上下文。
+        每个父/子分段都前置标题路径，保证回溯到的任一分段都自带主题。
         """
         result: list[Chunk] = []
         for part in self._split_parents(body):
             parent_id = next_id_str()
-            result.append(Chunk(part, {
+            result.append(Chunk(self._compose(title, part), {
                 **meta, MetaKey.CHUNK_ID: parent_id, MetaKey.SKIP_EMBEDDING: 1,
             }))
             blocks = self._aggregate_blocks(part)
             brother_id = next_id_str()
-            result.extend(Chunk(b, {
+            result.extend(Chunk(self._compose(title, b), {
                 **meta, MetaKey.CHUNK_ID: next_id_str(),
                 MetaKey.PARENT_CHUNK_ID: parent_id, MetaKey.SKIP_EMBEDDING: 0,
                 MetaKey.BROTHER_CHUNK_ID: brother_id,
