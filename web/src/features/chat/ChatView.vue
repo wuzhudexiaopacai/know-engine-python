@@ -210,6 +210,9 @@ async function onToggleAll(value: boolean): Promise<void> {
 
 /** 把当前会话写进地址栏（/chat/{id}），刷新后可直接回到同一会话 */
 function syncUrl(id: string | null): void {
+  // 已离开对话页（如切到模型配置/知识文档）：不再回写地址栏，
+  // 否则 watcher/异步回调会把刚导航走的用户拽回对话页
+  if (route.name !== 'chat') return
   const target = id ? `/chat/${id}` : '/chat'
   if (route.path !== target) void router.replace(target)
 }
@@ -515,6 +518,9 @@ onMounted(async () => {
 
 // 前进/后退：跟随地址栏参数切换会话，避免只改 URL 不换内容
 watch(() => route.params.conversationId, (value) => {
+  // 导航离开对话页（如点“模型配置”）后不再处理：此时参数自然变空，
+  // 继续往下走会把地址栏 replace 回 /chat/{id}，顶掉刚发起的导航
+  if (route.name !== 'chat') return
   const next = typeof value === 'string' && value ? value : null
   if (next === activeId.value) return
   if (next) {

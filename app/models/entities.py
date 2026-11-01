@@ -244,7 +244,7 @@ class LlmModel(Base, AuditMixin):
 class ModelRoleBinding(Base, AuditMixin):
     """模型用途绑定：一个系统用途（角色）绑定一个已配置模型。
 
-    role 为主键（chat/vision/speech/embedding/rerank/image_gen），
+    role 为主键（chat/vision/speech/embedding/rerank/image_gen/memory），
     model_id 为空表示未绑定（由服务层按用途默认模型或环境变量兜底）。
     与 llm_model.purpose 的区别：purpose 描述「这个模型能干什么」，
     本表描述「系统这个位置当前用哪个模型」，两者解耦后同一模型可被多处复用。

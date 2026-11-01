@@ -222,9 +222,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             if stop_event.is_set():
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
-        asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+        asyncio.create_task(_maybe_summarize(user_id, conv_id))
         if is_new and answer:
-            asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
+            asyncio.create_task(_async_title(conv_id, question, answer))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
         _suggestion = await _generate_suggestions(question, answer, llm=llm)
         if _suggestion:
@@ -251,9 +251,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
             yield SseEvent.TOKEN, {"text": answer}
             if refs:
                 yield SseEvent.REFERENCE, {"references": refs}
-            asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+            asyncio.create_task(_maybe_summarize(user_id, conv_id))
             if is_new and answer:
-                asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
+                asyncio.create_task(_async_title(conv_id, question, answer))
             yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
             _suggestion = await _generate_suggestions(question, answer, llm=llm)
             if _suggestion:
@@ -284,9 +284,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
                 interrupted = True               # 用户中断：退出即关闭上游 LLM 流，部分答案照常持久化
                 break
         await chat.update_assistant_content(assistant_msg_id, answer, model_name=model_name)
-        asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+        asyncio.create_task(_maybe_summarize(user_id, conv_id))
         if is_new and answer:
-            asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
+            asyncio.create_task(_async_title(conv_id, question, answer))
         yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
         _suggestion = await _generate_suggestions(question, answer, llm=llm)
         if _suggestion:
@@ -375,9 +375,9 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     if not interrupted and not image_parts:
         asyncio.create_task(_mine_qa_cache(question, answer, chunks))
 
-    asyncio.create_task(_maybe_summarize(user_id, conv_id, llm=llm))
+    asyncio.create_task(_maybe_summarize(user_id, conv_id))
     if is_new and answer:
-        asyncio.create_task(_async_title(conv_id, question, answer, llm=llm))
+        asyncio.create_task(_async_title(conv_id, question, answer))
     yield SseEvent.ANSWER_MESSAGE, {"message_id": assistant_msg_id}
     _suggestion = await _generate_suggestions(question, answer, llm=llm)
     if _suggestion:
@@ -660,13 +660,20 @@ async def _general_chat(question: str, history: str, *, llm=None) -> AsyncIterat
         yield "抱歉，服务暂时不可用，请稍后再试。"
 
 
-async def _async_title(conversation_id: str, question: str, answer: str = "",
-                       *, llm=None) -> None:
+async def _memory_llm():
+    """长期记忆后台任务（摘要/标题）专用模型：绑定「记忆摘要」用途，未绑定回退对话模型。"""
+    runtime = await model_service.resolve_memory_runtime()
+    return get_model_llm(runtime.id, runtime.lock_version, runtime.base_url,
+                         runtime.api_key, runtime.model_name, runtime.allow_empty_key,
+                         runtime.supports_vision)
+
+
+async def _async_title(conversation_id: str, question: str, answer: str = "") -> None:
     """首轮问答后异步生成语义标题：基于「问题+回答内容」，而非首句截断。
 
     标题会随滚动摘要刷新（见 _maybe_summarize），最终反映会话整体主题。
     """
-    llm = llm or get_llm()
+    llm = await _memory_llm()
     if not llm.available:
         return
     try:
@@ -686,7 +693,7 @@ def _clean_title(raw: str) -> str:
     return title[:16]
 
 
-async def _maybe_summarize(user_id: str, conversation_id: str, *, llm=None) -> None:
+async def _maybe_summarize(user_id: str, conversation_id: str) -> None:
     """滚动摘要：未折叠消息达到阈值时，异步生成新摘要并落库。
 
     触发阈值 = summary_round_interval（轮次）* 2（每轮 user+assistant 两条）。
@@ -705,7 +712,7 @@ async def _maybe_summarize(user_id: str, conversation_id: str, *, llm=None) -> N
         prev_summary = prev.summary_text if prev and prev.summary_text else "（无）"
         # 取本轮待折叠的消息（最近 unfolded 条按正序）
         history_plain = await chat.get_history(conversation_id)  # 不带摘要，纯最近窗口
-        llm = llm or get_llm()
+        llm = await _memory_llm()
         if not llm.available:
             return
         new_summary = await llm.chat(

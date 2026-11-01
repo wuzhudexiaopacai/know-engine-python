@@ -146,6 +146,15 @@ sequenceDiagram
 
 关键点：推荐的数据源优先取**摘要**而非标题——摘要信息密度更高（修复前因摘要从未生成，这里永远拿到的是兜底文案）。
 
+### 2.4 记忆模型可独立配置
+
+摘要、标题、推荐都是高频小请求（输出只有几百字），与主对话回答的模型诉求不同，因此系统为它们提供了独立的用途绑定：
+
+- 管理后台「模型配置 → 模型用途」新增一项 **「记忆摘要」**（role = `memory`，能力类型 = 对话模型）。
+- 绑定后，滚动摘要、会话标题、新会话推荐统一使用该模型；**未绑定时回退到对话模型的完整解析链**（chat 用途绑定 → chat 默认 → 首个启用 → 环境变量），因此不绑定也不会改变既有行为。
+- 解析入口：`model_service.resolve_memory_runtime()`；调用方为 [pipeline.py](../app/modules/rag/pipeline.py) 的 `_memory_llm()`（摘要/标题）与 [controller.py](../app/modules/chat/controller.py) 的 `memory_suggestions`（推荐）。
+- 候选模型即 `purpose` 含 `chat` 的已启用模型，无需为它单独定义新的 purpose 值——"能做什么"（purpose）与"系统这个位置用谁"（role）保持解耦。
+
 ---
 
 ## 三、摘要功能的实现

@@ -215,8 +215,8 @@ async def memory_suggestions(user: CurrentUser = Depends(get_current_user)) -> R
         topics = await chat.recent_memory_topics(user.owner_key, limit=8)
         if not topics:
             return R.ok(fallback)
-        # 与主对话链路一致：使用管理员配置的默认对话模型（而非环境变量兜底）
-        runtime = await model_service.resolve_runtime(None)
+        # 使用「记忆摘要」用途的模型（未绑定回退对话模型），与摘要/标题保持一致
+        runtime = await model_service.resolve_memory_runtime()
         llm = get_model_llm(runtime.id, runtime.lock_version, runtime.base_url,
                             runtime.api_key, runtime.model_name, runtime.allow_empty_key,
                             runtime.supports_vision)

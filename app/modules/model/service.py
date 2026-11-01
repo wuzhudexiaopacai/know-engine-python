@@ -160,6 +160,13 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
         "capability": "image_gen",
         "description": "对话页「生成图片」功能使用的绘画模型。",
     },
+    "memory": {
+        "label": "记忆摘要",
+        "capability": "chat",
+        "description": ("长期记忆的后台小任务：滚动摘要、会话智能标题、新会话推荐。"
+                        "可单独绑定一个更轻量的对话模型以降低开销；"
+                        "未绑定时自动回退到对话模型的解析链。"),
+    },
 }
 
 
@@ -222,6 +229,19 @@ async def resolve_vision_runtime() -> ModelRuntime | None:
     return await resolve_role_runtime("vision")
 
 
+async def resolve_memory_runtime() -> ModelRuntime:
+    """长期记忆后台任务（滚动摘要 / 智能标题 / 新会话推荐）专用模型。
+
+    绑定优先；未绑定时回退到对话模型的完整解析链（chat 用途绑定 → chat 默认
+    → 首个启用 → 环境变量），保证新增此用途不改变任何既有行为。
+    """
+    async with session_scope() as session:
+        bound = await _bound_model(session, "memory")
+        if bound is not None:
+            return runtime_of(bound)
+    return await resolve_runtime(None)
+
+
 async def _bound_model(session, role: str) -> LlmModel | None:
     """读取角色绑定并校验模型仍启用；绑定失效时返回 None，由调用方走默认降级。"""
     binding = (await session.execute(
@@ -265,6 +285,8 @@ def _env_fallback(role: str) -> str | None:
         return f"环境变量精排配置（{s.rerank.model}）" if s.llm.api_key else None
     if role == "image_gen":
         return f"环境变量文生图模型（{s.image.model}）" if (s.image.api_key or s.llm.api_key) else None
+    if role == "memory":
+        return f"对话模型解析链（当前 {s.llm.chat_model}）" if s.llm.api_key else "对话模型解析链"
     return None
 
 
