@@ -26,5 +26,6 @@ web/.env.local
 # ---- IDE / OS ----
 .idea/
 .vscode/
+.trae/
 .DS_Store
 Thumbs.db
