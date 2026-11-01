@@ -309,6 +309,42 @@ async def save_summary(conversation_id: str, text: str, message_count: int) -> N
         ))
 
 
+async def recent_memory_topics(owner_key: str, limit: int = 8) -> list[str]:
+    """返回用户近期会话的记忆素材：优先长期摘要，无摘要时回退会话标题。
+
+    供新会话「你可能感兴趣」建议使用，让推荐真正受长期记忆影响。
+    """
+    async with session_scope() as session:
+        last_msg_at = (
+            select(func.max(ChatMessage.created_at))
+            .where(ChatMessage.conversation_id == ChatConversation.conversation_id)
+            .correlate(ChatConversation)
+            .scalar_subquery()
+        )
+        convs = (await session.execute(
+            base_filter(ChatConversation)
+            .where(ChatConversation.user_id == owner_key)
+            .order_by(func.coalesce(last_msg_at, ChatConversation.created_at).desc())
+            .limit(limit))).scalars().all()
+        conv_ids = [c.conversation_id for c in convs]
+        if not conv_ids:
+            return []
+        rows = (await session.execute(
+            base_filter(ChatConversationSummary)
+            .where(ChatConversationSummary.conversation_id.in_(conv_ids))
+            .order_by(ChatConversationSummary.id.desc()))).scalars().all()
+    latest: dict[str, str] = {}
+    for s in rows:
+        if s.summary_text:
+            latest.setdefault(s.conversation_id, s.summary_text)
+    topics: list[str] = []
+    for c in convs:
+        text = latest.get(c.conversation_id) or c.title
+        if text:
+            topics.append(text[:500])
+    return topics
+
+
 async def list_messages(conversation_id: str, owner_key: str,
                         is_admin: bool = False) -> list[dict]:
     async with session_scope() as session:

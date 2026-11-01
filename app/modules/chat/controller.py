@@ -195,8 +195,12 @@ async def update_preferences(body: PreferenceRequest,
 
 @router.get("/suggestions")
 async def memory_suggestions(user: CurrentUser = Depends(get_current_user)) -> R:
-    """基于用户最近会话主题生成 3 个新会话建议问题；无记忆时返回静态兜底。"""
-    from app.services.llm_client import get_llm
+    """基于用户长期记忆（会话摘要优先、标题兜底）生成 3 个新会话建议问题。
+
+    长期记忆关闭或无任何历史时返回静态兜底；LLM 失败同样静默降级。
+    """
+    from app.modules.model import service as model_service
+    from app.services.llm_client import get_model_llm
     from app.services.prompt_loader import render
 
     fallback = [
@@ -205,16 +209,21 @@ async def memory_suggestions(user: CurrentUser = Depends(get_current_user)) -> R
         "Vue 项目构建太慢怎么优化？",
     ]
     try:
-        # 取用户最近 10 个会话标题作为主题线索
-        convs = await chat.list_conversations(user.owner_key)
-        topics = [c["title"] for c in convs[:10] if c.get("title")]
+        pref = await chat.get_preference(user.owner_key)
+        if not pref.long_term_memory_enabled:
+            return R.ok(fallback)
+        topics = await chat.recent_memory_topics(user.owner_key, limit=8)
         if not topics:
             return R.ok(fallback)
-        llm = get_llm()
+        # 与主对话链路一致：使用管理员配置的默认对话模型（而非环境变量兜底）
+        runtime = await model_service.resolve_runtime(None)
+        llm = get_model_llm(runtime.id, runtime.lock_version, runtime.base_url,
+                            runtime.api_key, runtime.model_name, runtime.allow_empty_key,
+                            runtime.supports_vision)
         if not llm.available:
             return R.ok(fallback)
         raw = await llm.chat(
-            render("memory-suggestions-prompt", recent_topics="\n".join(topics)),
+            render("memory-suggestions-prompt", recent_topics="\n\n".join(topics)),
             model=llm.flash_model, temperature=0.7, max_tokens=200)
         questions = [line.strip().lstrip("0123456789.、) ")
                      for line in (raw or "").splitlines() if line.strip()]
