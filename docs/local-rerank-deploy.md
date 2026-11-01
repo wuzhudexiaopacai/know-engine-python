@@ -486,6 +486,251 @@ llama.cpp 默认 `--ubatch-size 512`。实测边界：
 
 ---
 
+### 问题 9：知识库明明有片段，却提示「暂无相关资料」（精排阈值口径错误）
+
+> 这是本项目中**最隐蔽**的一个坑：召回完全正常、精排也正常返回了分数，
+> 但最终结果被一道「看起来合理」的阈值全部过滤掉。现象很像"知识库没内容"，实际是**分数口径错了**。
+
+#### 9.1 现象
+
+用户在聊天页问 **「Spring事务传播」**。左侧「切片与向量化结果」弹窗里明明有：
+
+- 第 116 段：`事务传播行为是为了解决业务层方法之间互相调用时的事务问题…`
+- 第 117 段：`嵌套事务 / NESTED 与 REQUIRES_NEW 的区别…`
+
+但回答开头仍然是 **「知识库暂无相关资料（以下为通用知识，未经知识库验证）」**。
+换几个问题更明显——「讲一下mysql」「Spring 中支持的几种主要事务隔离级别」「Spring 常见面试题」
+全部 0 条引用，用户的第一反应一定是"检索坏了 / 知识库没建好"。
+
+#### 9.2 这个问题出在哪个流程
+
+RAG 回答链路是四段，问题出在 **第 3 段「精排聚合」**，不是第 1 段的召回：
+
+```text
+用户提问
+   │
+   ① 召回 retrieve()          向量 KNN + 全文检索 + RRF 融合  → 约 30 条候选   ✅ 正常
+   │
+   ② 精排 rerank()            bge-reranker 交叉编码器逐条打分                     ✅ 正常返回分数
+   │
+   ③ 门控 + 聚合 aggregate()  ★ 这里用固定阈值 0.35 过滤 logits → 全部被丢掉   ❌ 出错点
+   │
+   ④ 生成 _generate()         把空参考资料拼进 Prompt → 模型说"暂无相关资料"
+```
+
+对应代码位置：
+
+| 环节 | 文件 | 函数 |
+| --- | --- | --- |
+| 召回 + 聚合入口 | [retrieval.py](file:///d:/code/rag/know-engine-python/app/modules/rag/retrieval.py) | `retrieve()` / `aggregate()` |
+| 精排调用 | [rerank.py](file:///d:/code/rag/know-engine-python/app/services/rerank.py) | `rerank()` |
+| 拼参考资料 | [pipeline.py](file:///d:/code/rag/know-engine-python/app/modules/rag/pipeline.py) | `_fmt_contexts()` |
+
+#### 9.3 根因：把「原始 logits」当成「0~1 相似度」用
+
+精排模型对 `(问题, 文档)` 这一对算出一个相关性分数。但**不同后端的分数口径完全不同**：
+
+| 后端 | 返回字段 | 数值范围 | 含义 |
+| --- | --- | --- | --- |
+| DashScope（百炼） | `relevance_score` | 0 ~ 1 | 已经归一化的相关概率 |
+| TEI | `score` | 0 ~ 1 | 同上 |
+| **llama.cpp `--reranking`** | `score` | **约 -10 ~ +10** | **未经 sigmoid 的原始 logits** |
+
+本项目最早对接的是 DashScope，门控代码天然写成「小于 0.35 就丢弃」。
+后来精排换成本地 llama.cpp + bge-reranker-v2-m3，**接口通了、分数也拿到了，但量纲变了**，
+这段阈值判断被原样保留，于是就出现了：
+
+- 真正相关、但 logit 为 **负数** 的片段（如「事务隔离级别」那条是 **-1.370**）被判为无关；
+- 同一批里 top1 只有 0.264 时，**30 条候选全部低于 0.35**，结果 0 条。
+
+`sigmoid(0.35) ≈ 0.587`，也就是说这个"阈值 0.35"实际要求相关概率 **58.7% 以上**，
+对 CPU 跑的小精排模型来说过于严格。
+
+#### 9.4 修复前的代码（有问题的版本）
+
+[retrieval.py · aggregate()](file:///d:/code/rag/know-engine-python/app/modules/rag/retrieval.py)
+
+```python
+pairs = await get_rerank().rerank(query_text, [c.text for c in chunks],
+                                  top_n=cfg.reranked_top_k)
+if pairs is not None:
+    ranked: list[RetrievedChunk] = []
+    dropped = 0
+    for idx, score in pairs:
+        # ❌ 坑在这里：score 是原始 logits（可为负），却直接和 0.35 比较
+        if score < cfg.min_score:
+            dropped += 1
+            continue
+        c = chunks[idx]
+        c.rerank_score = score
+        if c.similarity is None:
+            c.similarity = score          # ❌ 顺带把负数 logits 当成"相似度"展示
+        ranked.append(c)
+    logger.info("rerank_done", pairs=len(pairs), kept=len(ranked), dropped=dropped,
+                min_score=cfg.min_score)
+    return ranked[:cfg.reranked_top_k]
+```
+
+问题有两个：
+1. `score < 0.35` —— 绝对阈值作用在 logits 上，量纲不匹配；
+2. 展示层把 logits 直接当 `similarity` —— 用户可能看到 `-1.37` 这种离谱的"相似度"。
+
+#### 9.5 修复后的代码
+
+思路分两步：**先归一化，再做"绝对下限 + 相对差距"双门控**。
+
+新增常量与归一化函数：
+
+```python
+# 精排门控参数。
+# llama.cpp / TEI 返回的是 Cross-Encoder 原始 logits（可正可负，量纲随模型变化），
+# 不能直接和固定阈值比较：同一批候选里 top1 分数高时，同档相关片段也可能为负值。
+# 因此先用 sigmoid 归一成 0~1 概率，再做两道门控：
+#   TOP1_FLOOR —— 整批最高分都低于该概率，判为"没有相关资料"，返回空
+#   REL_MARGIN —— 保留与 top1 概率差距在 0.35 以内的片段，避免绝对阈值误杀次优的相关结果
+_SIG_TOP1_FLOOR = 0.30
+_SIG_REL_MARGIN = 0.35
+
+
+def _sigmoid(x: float) -> float:
+    """logits → 0~1 概率（防溢出）。"""
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
+```
+
+聚合逻辑改为：
+
+```python
+pairs = await get_rerank().rerank(query_text, [c.text for c in chunks],
+                                  top_n=cfg.reranked_top_k)
+if pairs is not None:
+    # 精排分是原始 logits，先 sigmoid 归一，再按「top1 下限 + 相对差距」双重门控。
+    # 只用固定阈值会把 top1 附近的相关片段一起误杀（实测"事务隔离级别"正确片段 logit=-1.37）。
+    probs = [(_sigmoid(score), idx, score) for idx, score in pairs]
+    top_prob = max(p for p, _, _ in probs) if probs else 0.0
+
+    # 第一道门：整批都不相关（如"倒车入库" top1 logit≈-6.5，概率 0.0015）→ 直接返回空
+    if top_prob < _SIG_TOP1_FLOOR:
+        logger.info("rerank_no_relevant", candidates=len(chunks),
+                    top_prob=round(top_prob, 4))
+        return []
+
+    # 第二道门：只保留与 top1 同档的片段（概率差距 ≤ 0.35）
+    keep_above = top_prob - _SIG_REL_MARGIN
+    ranked: list[RetrievedChunk] = []
+    dropped = 0
+    for prob, idx, score in probs:
+        if prob < keep_above:
+            dropped += 1
+            continue
+        c = chunks[idx]
+        c.rerank_score = score          # 原始 logits 保留，便于日志排查
+        if c.similarity is None:
+            c.similarity = round(prob, 4)   # 展示用归一化概率，不会是负数
+        ranked.append(c)
+    ranked.sort(key=lambda c: -(c.rerank_score or 0.0))
+    logger.info("rerank_done", pairs=len(pairs), kept=len(ranked), dropped=dropped,
+                top_prob=round(top_prob, 4), keep_above=round(keep_above, 4))
+    return ranked[:cfg.reranked_top_k]
+```
+
+为什么这样设计：
+
+- **绝对下限放在 top1 上，而不是每条结果上** —— 一批候选里 top1 代表"这批里最像的有多像"，
+  用它判断"整体是否有资料"；逐条设阈值就等于要求每条都像 top1 一样相关，必然误杀。
+- **相对差距用概率而不是 logits** —— 概率差在 0.35 内的含义是"相关程度接近"，
+  换任何精排模型（logits 尺度不同）都成立；用 logits 差则要随模型重新调参。
+
+#### 9.6 同时修的第二个坑：模型把"有资料"说成"没资料"
+
+现象上还有一半来自 **生成阶段的 Prompt**，不是检索：
+
+11:42 那条回答其实**带着 1 条引用**（`rerank_score=6.74`，命中「Spring事务传播行为有几种」），
+但小模型看到资料没有把 7 种传播行为逐条列出，就按旧规则的"资料未覆盖"把整段标成了通用知识。
+
+旧规则（[rag-answer-prompt.txt](file:///d:/code/rag/know-engine-python/app/prompts/rag-answer-prompt.txt)）：
+
+```text
+资料未覆盖的部分（含资料与问题明显无关、或参考资料为空），先明确提示"知识库暂无相关资料"，
+再基于通用技术知识继续完整作答…
+```
+
+问题在于「资料与问题明显无关」这条判断交给了模型，小模型倾向于过度保守。
+
+新规则：
+
+```text
+仅当【参考资料】显示为"（未检索到相关资料）"时，才提示"知识库暂无相关资料"…
+参考资料非空时，必须优先引用并展开资料内容作答，禁止声称"知识库暂无相关资料"；
+若资料只缺问题的某个细节，只在那一小处注明"资料未覆盖该细节"，其余内容仍依据资料作答
+```
+
+把"有没有资料"的判断权从模型手里收回，交给检索层（检索层已经用门控保证了相关性）；
+模型只负责"资料是否覆盖了某个细节"。
+
+#### 9.7 复测结果（同一批问题，修复前 vs 修复后）
+
+召回数量不变（都是约 30 条），差别只在门控：
+
+| 提问 | top1 精排分（logits） | 修复前（0.35 绝对阈值） | 修复后（sigmoid + 相对门控） |
+| --- | --- | --- | --- |
+| 讲一下mysql | 0.264 | **0 条** ❌ | **6 条** ✅（MySQL 日志/索引失效等） |
+| Spring 中支持的几种主要事务隔离级别 | 0.073（正确片段 -1.370） | **0 条** ❌ | **3 条** ✅（含「事务隔离级别…读未提交」） |
+| Spring 常见面试题 | 0.324 | **0 条** ❌ | **2 条** ✅（Spring AOP 等） |
+| Spring事务传播 | 6.742 | 1 条 | **1 条** ✅（保持） |
+| Redis 的持久化方案怎么选 | 2.165 | 3 条 | **3 条** ✅（保持） |
+| 倒车入库的操作流程是什么 | **-6.5** | 0 条 | **0 条** ✅（仍然正确过滤，未放松） |
+
+关键点：**修复没有放宽到"什么都收"**。
+"倒车入库" top1 的 logit 是 -6.5（概率 0.0015），仍然被第一道门正确判为无关——
+这正是双门控存在的意义。
+
+#### 9.8 复现与排查方法（以后再遇到类似问题）
+
+不要靠猜，按下面三步定位：
+
+**第一步：确认召回是否拿到了内容**（排除"没检索到"）
+
+```python
+chunks = await retrieval.retrieve("Spring事务传播")
+print(len(chunks))            # 30 → 召回没问题
+```
+
+**第二步：打印精排原始分和最终条数**（区分"没召回"和"被门控丢了"）
+
+```python
+chunks = await retrieval.retrieve(q)
+pairs = await get_rerank().rerank(q, [c.text[:2000] for c in chunks], top_n=10)
+print(pairs[:5])                     # 看 top1 是正还是负、量级多大
+final = await retrieval.aggregate(q, chunks)
+print(len(final))                    # 0 → 说明是门控丢的，不是召回
+```
+
+如果出现「召回 30、最终 0、top1 为负或接近 0」，基本就是阈值口径问题。
+
+**第三步：看日志**
+
+| 日志 | 含义 |
+| --- | --- |
+| `rerank_done pairs=30 kept=0 dropped=30 top_prob=0.07` | top1 概率太低 → 阈值过严或资料确实不相关 |
+| `rerank_no_relevant candidates=30 top_prob=0.0015` | 整批判无关（正常行为，如"倒车入库"） |
+| `rerank_failed_fallback_rrf` | 精排服务没起来，走了无精排门控 |
+
+#### 9.9 这个坑的通用教训
+
+1. **接入任何打分模型，先确认分数的口径**：是概率、余弦相似度，还是原始 logits？
+   不要假设"分数都在 0~1"。
+2. **绝对阈值只在"每条结果都可信"时可用**；多候选排序场景优先用**相对 top1 的差距**。
+3. **换模型 = 重新校准阈值**。模型权重换了，logits 尺度就是新的，旧的阈值不再有意义。
+4. **别让生成模型决定"有没有检索到资料"**。检索层有确定性的门控结果，
+   让模型再判断一次，只会引入不一致（本例中引用存在、正文却说"暂无资料"）。
+5. **排查顺序永远是：召回 → 精排 → 门控 → Prompt**。
+   先确认每一层各剩多少条，再看是哪一层把它清空的，比直接改阈值快得多。
+
+---
+
 ## 九、实测结果汇总
 
 | 提问 | 修复前 | 修复后 |
@@ -493,6 +738,9 @@ llama.cpp 默认 `--ubatch-size 512`。实测边界：
 | Redis 的持久化方案怎么选 | 「检索暂时不可用」/ 精排 500 降级 | **3 条**，头条即「Redis的RDB和AOF区别」 |
 | MySQL 索引失效的场景有哪些 | 混杂无关段落 | **1 条**，正是「索引失效的情况」 |
 | 倒车入库的操作流程是什么 | **8 条**无关引用 | **0 条**，明确提示无相关资料 |
+| 讲一下mysql | 0 条（精排阈值误杀） | **6 条** |
+| Spring 中支持的几种主要事务隔离级别 | 0 条（正确片段 logit -1.37 被丢弃） | **3 条**，含正确片段 |
+| Spring 常见面试题 | 0 条（top1 仅 0.324） | **2 条** |
 
 数据侧：151 个分段（150 条向量 + 1 条父段）已用 768 维模型重新向量化，MySQL 与 ES 一致。
 
@@ -530,10 +778,22 @@ Invoke-RestMethod http://127.0.0.1:8080/health   # status: ok
 
 ### 调阈值
 
-`VECTOR__MIN_SCORE=0.35` 是配合 llama.cpp 原始 logits 的口径。换精排模型后：
+精排门控已改为**「sigmoid 归一 + 相对 top1 差距」**，不再直接比较 `VECTOR__MIN_SCORE`：
 
-- 如果返回 0~1 概率（多数云端 API），阈值 0.3~0.5 合理；
-- 如果返回原始 logits（llama.cpp），0.35 约等于 sigmoid 后 0.59，偏严格，可按实际效果降到 0.0 ~ 0.2。
+| 参数 | 位置 | 默认 | 作用 |
+| --- | --- | --- | --- |
+| `_SIG_TOP1_FLOOR` | [retrieval.py](file:///d:/code/rag/know-engine-python/app/modules/rag/retrieval.py) | 0.30 | 整批最高概率低于它 → 判定"本轮没有相关资料"，返回 0 条 |
+| `_SIG_REL_MARGIN` | 同上 | 0.35 | 只保留与 top1 概率差距 ≤ 0.35 的片段 |
+
+调整建议：
+
+- **漏召回**（明明有相关内容却 0 条）：调低 `_SIG_TOP1_FLOOR`（如 0.25）或调大 `_SIG_REL_MARGIN`（如 0.45）；
+- **乱召回**（无关内容被引用）：调高 `_SIG_TOP1_FLOOR`（如 0.4）或调小 `_SIG_REL_MARGIN`（如 0.25）；
+- **换精排模型后**：logits 尺度会变，`_SIG_TOP1_FLOOR` / `_SIG_REL_MARGIN` 需要用同一批测试问题重新校准
+  （参见「问题 9」的复测方法）。
+
+> `VECTOR__MIN_SCORE` 目前**不参与精排过滤**，仅在日志里作为 `min_logit` 记录参考值。
+> 精排是否过滤只看 `_SIG_TOP1_FLOOR` / `_SIG_REL_MARGIN`；无精排路径看 `_MIN_TERM_OVERLAP`。
 
 ### 关键日志
 
@@ -561,6 +821,4 @@ Invoke-RestMethod http://127.0.0.1:8080/health   # status: ok
 | 检索配置项 | [settings.py](file:///d:/code/rag/know-engine-python/app/config/settings.py) |
 | 前端模型配置页 | [ModelConfigView.vue](file:///d:/code/rag/know-engine-python/web/src/features/admin/ModelConfigView.vue) |
 | 精排启动脚本 | `D:\models\rerank\start-rerank.ps1` |
-</content>
-</article>
-</Write>
+
