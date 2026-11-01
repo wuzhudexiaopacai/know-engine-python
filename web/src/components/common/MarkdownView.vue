@@ -7,20 +7,77 @@ import type { MarkdownIt as MarkdownItInstance, RendererRule } from 'markdown-it
 import DOMPurify from 'dompurify'
 import markdownItKatex from '@vscode/markdown-it-katex'
 import 'katex/dist/katex.min.css'
+import { useTheme } from '@/composables/useTheme'
 
 const props = defineProps<{ text: string; streaming?: boolean }>()
+const { isDark } = useTheme()
+
+// ---------- 图表文字自动对比度修复 ----------
+// 暗色下用 mermaid 'dark' 主题（边线/描边变浅可见），但 LLM 图常带浅色 classDef 填充
+// 且不指定文字色，dark 主题会把文字也变浅→浅底浅字看不清。渲染后按每个标签背部的
+// 实际底色亮度，自动将文字取黑/白，保证任何配色都清晰。
+const DARK_TXT = '#0f172a'
+const LIGHT_TXT = '#f1f5f9'
+function parseRgb(s: string | null | undefined): number[] | null {
+  if (!s) return null
+  const m = s.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/)
+  if (!m) return null
+  const alpha = m[4] !== undefined ? parseFloat(m[4]) : 1
+  if (alpha < 0.05) return null            // 近透明，视为无背景
+  return [Number(m[1]), Number(m[2]), Number(m[3])]
+}
+function relLum(rgb: number[]): number {
+  const [r, g, b] = rgb.map((v) => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+// 从标签向上找最近的 <g> 节点组内的形状（rect/path/polygon/...）作为其背景
+function bgFor(el: Element, canvas: number[]): number[] {
+  let n: Element | null = el.parentElement
+  while (n && n.tagName.toLowerCase() !== 'svg') {
+    if (n.tagName.toLowerCase() === 'g') {
+      for (const child of Array.from(n.children)) {
+        if (/^(rect|path|polygon|circle|ellipse)$/i.test(child.tagName)) {
+          const c = parseRgb(getComputedStyle(child).fill)
+          if (c) return c
+        }
+      }
+    }
+    n = n.parentElement
+  }
+  return canvas
+}
+function fixMermaidContrast(root: HTMLElement) {
+  const svg = root.querySelector('svg')
+  if (!svg) return
+  const canvas = parseRgb(getComputedStyle(root).backgroundColor) ?? [30, 30, 30]
+  const pick = (bg: number[]) => (relLum(bg) > 0.45 ? DARK_TXT : LIGHT_TXT)
+  svg.querySelectorAll<SVGTextElement>('text, tspan').forEach((t) => {
+    t.style.fill = pick(bgFor(t, canvas))
+  })
+  svg.querySelectorAll<HTMLElement>('foreignObject .nodeLabel, foreignObject span, foreignObject div').forEach((s) => {
+    s.style.color = pick(bgFor(s, canvas))
+  })
+}
 
 // Mermaid 体积较大，按需动态加载：只有出现 mermaid 代码块时才拉取
+// 主题跟随全局亮/暗：暗色下用内置 'dark' 主题 + 上述文字对比修复，与深色页面融为一体
+function applyMermaidTheme(mermaid: typeof import('mermaid').default) {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',   // 图表内不执行脚本，防注入
+    theme: isDark.value ? 'dark' : 'default',
+    fontFamily: 'inherit',
+  })
+}
+
 let mermaidPromise: Promise<typeof import('mermaid').default> | null = null
 function loadMermaid() {
   if (!mermaidPromise) {
     mermaidPromise = import('mermaid').then((m) => {
-      m.default.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',   // 图表内不执行脚本，防注入
-        theme: 'default',
-        fontFamily: 'inherit',
-      })
+      applyMermaidTheme(m.default)
       return m.default
     })
   }
@@ -161,6 +218,7 @@ async function renderMermaid() {
       await mermaid.parse(code)               // 先校验语法，避免 render 抛出并留下脏节点
       const { svg } = await mermaid.render(`md-mermaid-${++mermaidSeq}`, code)
       el.innerHTML = svg
+      if (isDark.value) fixMermaidContrast(el)   // 暗色下修正文字与节点底色的对比
     } catch {
       el.innerHTML =
         '<div class="md__mermaid-error">图表语法解析失败，已显示原始代码</div>' +
@@ -174,6 +232,26 @@ watch(viewHtml, async () => {
   void renderMermaid()
 })
 onMounted(() => {
+  void renderMermaid()
+})
+
+// 主题切换：已渲染图表的颜色在渲染时已烘进 SVG，需按新主题重初始化并重画（含对比修复）
+watch(isDark, async () => {
+  const root = rootEl.value
+  if (!root) return
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>('.md__mermaid'))
+  if (!nodes.length) return
+  let mermaid: typeof import('mermaid').default
+  try {
+    mermaid = await loadMermaid()
+  } catch {
+    return
+  }
+  applyMermaidTheme(mermaid)
+  for (const el of nodes) {
+    el.dataset.rendered = ''                 // 重置标记，令 renderMermaid 重新绘制
+    el.innerHTML = ''
+  }
   void renderMermaid()
 })
 

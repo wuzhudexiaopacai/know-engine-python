@@ -44,7 +44,7 @@
   // ---- 品牌底上的前景（始终白，两主题通用）----
   --ke-on-brand: #ffffff;
 
-  // ---- 图表底色：mermaid 默认亮色主题渲染，固定白底以保证图形文字可读 ----
+  // ---- 图表底色：亮色白底；暗色覆盖为深色，mermaid 用 dark 主题渲染并自动修正文字对比度 ----
   --ke-diagram-bg: #ffffff;
 }
 
@@ -181,6 +181,7 @@ html.dark {
   --ke-bg-elevated: #242424;   // 抬升面板
   --ke-bg-hover:    #2a2a2a;
   --ke-bg-input:    #1e1e1e;
+  --ke-diagram-bg:  #1e1e1e;   // 暗色下图表与卡片同底；mermaid 用 dark 主题 + 文字自动对比修复保证可读
 
   // 灰阶翻转：大数=亮文本，小数=暗底面
   --ke-gray-25:   #1e1e1e;
