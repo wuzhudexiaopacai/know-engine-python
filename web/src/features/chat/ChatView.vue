@@ -3,7 +3,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Picture, Paperclip } from '@element-plus/icons-vue'
+import { Picture, Paperclip, ArrowDown } from '@element-plus/icons-vue'
 import {
   listConversations, listMessages, deleteConversation, submitFeedback,
   generateImage, cancelImage, listChatModels, uploadChatImage,
@@ -34,6 +34,8 @@ const selectedModelId = ref<number | null>(null)
 /** 管理员专属：是否查看全部用户的会话 */
 const viewAll = ref(false)
 const thread = ref<HTMLElement | null>(null)
+/** 用户是否已经上滑离开底部：是 → 显示「回到最新消息」悬浮按钮 */
+const showScrollBottom = ref(false)
 
 /** 模型下拉：文字 + 小三角触发的悬浮列表 */
 const modelMenuOpen = ref(false)
@@ -120,13 +122,30 @@ function tempId(): string {
   return `local-${Date.now()}-${seq++}`
 }
 
-function scrollToBottom(): void {
+function scrollToBottom(smooth = false): void {
   nextTick(() => {
     const box = thread.value
     if (!box) return
-    // 流式期间保持贴底，完成态用平滑滚动
-    box.scrollTo({ top: box.scrollHeight, behavior: streaming.value ? 'auto' : 'smooth' })
+    // 初次加载/切会话用瞬时贴底；流式生成期间保持贴底
+    box.scrollTo({ top: box.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+    showScrollBottom.value = false
   })
+  // 兜底：消息内图片/代码块等异步布局会在挂载后撑高容器，
+  // 等一帧后再贴一次底，避免停在半截（尤其长会话首次打开）
+  requestAnimationFrame(() => {
+    const box = thread.value
+    if (!box) return
+    box.scrollTo({ top: box.scrollHeight, behavior: 'auto' })
+    showScrollBottom.value = false
+  })
+}
+
+/** 监听滚动：用户上滑超过阈值时显示「回到最新消息」按钮 */
+function onThreadScroll(): void {
+  const box = thread.value
+  if (!box) return
+  const distanceToBottom = box.scrollHeight - box.scrollTop - box.clientHeight
+  showScrollBottom.value = distanceToBottom > 60
 }
 
 /** 后端历史消息 → 前端视图模型（用户侧图片 markdown 拆成附件展示） */
@@ -511,7 +530,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     />
 
     <section class="chat__main" :class="{ 'is-streaming': streaming }" aria-label="对话区" aria-live="polite">
-      <div ref="thread" class="chat__thread">
+      <div ref="thread" class="chat__thread" @scroll="onThreadScroll">
         <el-skeleton v-if="threadLoading" :rows="6" animated class="chat__skeleton" />
 
         <div v-else-if="!hasMessages" class="chat__welcome">
@@ -533,6 +552,18 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           @retry="onRetry"
           @stop="stop"
         />
+
+        <!-- 回到最新消息：上滑看历史时出现，点击瞬时滚到底部 -->
+        <transition name="chat-fab">
+          <el-button
+            v-if="showScrollBottom && hasMessages && !threadLoading"
+            class="chat__scroll-bottom"
+            circle
+            :icon="ArrowDown"
+            aria-label="回到最新消息"
+            @click="scrollToBottom()"
+          />
+        </transition>
       </div>
 
       <footer class="chat__composer">
@@ -732,6 +763,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   // 消息、输入区居中于收窄的阅读宽度，避免大片留白
   &__thread > :not(.chat__welcome) { max-width: 780px; margin: 0 auto; }
 
+  // 回到最新消息：悬浮在消息区右下角（输入框上方），上滑看历史时出现
+  &__scroll-bottom {
+    position: absolute;
+    right: 28px;
+    bottom: 24px;
+    z-index: 4;
+    box-shadow: 0 6px 20px rgba(17, 24, 39, 0.18);
+  }
+
   &__composer { position: relative; z-index: 1; flex: 0 0 auto; padding: var(--ke-space-3) var(--ke-space-6) var(--ke-space-4); }
   &__composer-inner {
     position: relative;
@@ -859,6 +899,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .model-pop-enter-from,
 .model-pop-leave-to { opacity: 0; transform: translateY(6px) scale(0.98); }
+
+// 回到最新消息按钮：上滑时淡入，贴底时淡出
+.chat-fab-enter-active,
+.chat-fab-leave-active { transition: opacity 0.2s var(--ke-ease-out), transform 0.2s var(--ke-ease-out); }
+.chat-fab-enter-from,
+.chat-fab-leave-to { opacity: 0; transform: translateY(8px); }
 
 // 图标按钮：hover 提亮并轻微放大
 .chat__actions .el-button .el-icon,
