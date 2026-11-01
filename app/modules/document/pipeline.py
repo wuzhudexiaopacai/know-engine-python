@@ -348,6 +348,9 @@ async def _split_pipeline(doc_id: int, version_id: int, force: bool = False) -> 
 
         # 2. 清理旧分段（重新切片场景：先删旧分段 + 向量记录）
         await _purge_segments(doc_id, version_id)
+        # 重切会生成全新 chunk_id：分段缓存和引用本文档的 QA 语义缓存全部失效，
+        # 否则用户仍会命中带旧引用的陈旧答案
+        await _invalidate_caches_after_resplit(doc_id)
 
         # 3. 切片
         # title 预置文档标题：无显式章节标题的文本（如 PDF 正文）也能带可辨认的引用标题
@@ -480,6 +483,18 @@ async def _purge_segments(doc_id: int, version_id: int) -> None:
                    KnowledgeSegment.document_version == version_id,
                    KnowledgeSegment.deleted == 0)
             .values(deleted=1))
+
+
+async def _invalidate_caches_after_resplit(doc_id: int) -> None:
+    """重新切片后失效缓存：分段 L1/L2 缓存 + 引用该文档的 QA 语义缓存。
+
+    chunk_id 每次重切都会变，旧缓存键再也命中不到；QA 缓存里保存的是来源快照，
+    不清理会继续返回引用旧 chunk_id 的答案。
+    """
+    from app.modules.document.service import invalidate_doc_cache
+    from app.modules.qa_cache import service as qa_service
+    await invalidate_doc_cache(doc_id)
+    await qa_service.invalidate_by_document(doc_id, detail=f"文档 {doc_id} 重新切片")
 
 
 def _run_blocking(fn, *args):

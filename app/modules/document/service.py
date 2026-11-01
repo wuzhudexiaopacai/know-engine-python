@@ -180,7 +180,7 @@ async def switch_version(doc_id: int, version_id: int, lock_version: int) -> Non
             update(KnowledgeDocument)
             .where(KnowledgeDocument.doc_id == doc_id)
             .values(status=ver.status))
-    await _invalidate_doc_cache(doc_id)
+    await invalidate_doc_cache(doc_id)
 
 
 async def rollback_delete_version(doc_id: int, version_id: int) -> None:
@@ -225,7 +225,7 @@ async def rollback_delete_version(doc_id: int, version_id: int) -> None:
     from app.infra.vector_store import get_vector_store
     store = await get_vector_store()
     await store.delete_by_version(version_id)
-    await _invalidate_doc_cache(doc_id)
+    await invalidate_doc_cache(doc_id)
 
 
 async def delete_document(doc_id: int, lock_version: int) -> None:
@@ -257,7 +257,7 @@ async def delete_document(doc_id: int, lock_version: int) -> None:
     from app.infra.vector_store import get_vector_store
     store = await get_vector_store()
     await store.delete_by_document(doc_id)
-    await _invalidate_doc_cache(doc_id)
+    await invalidate_doc_cache(doc_id)
     await _delete_upload_markers(extension)
     # 删除文档 → 失效引用它的 QA 语义缓存条目
     from app.modules.qa_cache import service as qa_service
@@ -598,8 +598,11 @@ async def _delete_upload_markers(extension: dict) -> None:
         await cache.delete(done_marker_key(md5))
 
 
-async def _invalidate_doc_cache(doc_id: int) -> None:
-    """文档变更 → 清理该文档全部分段的 L1/L2 缓存（权限或版本变更时失效）。"""
+async def invalidate_doc_cache(doc_id: int) -> None:
+    """文档变更 → 清理该文档全部分段的 L1/L2 缓存（权限或版本变更时失效）。
+
+    重新切片同样要调用：chunk_id 是随机雪花号，重切后旧缓存键永久失配。
+    """
     async with session_scope() as session:
         chunk_ids = (await session.execute(
             select(KnowledgeSegment.chunk_id).where(
