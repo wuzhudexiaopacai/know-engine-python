@@ -9,8 +9,9 @@
 
 from __future__ import annotations
 
+import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from sqlalchemy import update
@@ -27,6 +28,12 @@ from app.modules.model.schemas import (
 )
 # 端点拼接/响应解析与运行期精排服务共用同一套规则，避免"测试通过但调用失败"
 from app.services.rerank import build_rerank_body, parse_rerank, rerank_endpoint
+# 运行期与连通性测试共用同一传输策略：测试通过 == 实际调用可用
+from app.services.model_transports import (
+    ImageGenerationError, ModelCapabilityError, RetryableTransportError,
+    TransportStatusError, select_chat_transport, select_image_transport,
+    select_speech_transport,
+)
 
 logger = get_logger("app.model")
 
@@ -56,13 +63,42 @@ class ModelRuntime:
     @classmethod
     def from_env(cls) -> "ModelRuntime":
         cfg = get_settings().llm
+        base = _rewrite_local_url(cfg.base_url)
         return cls(id=0, display_name=f"默认模型（{cfg.chat_model}）",
-                   model_name=cfg.chat_model, base_url=cfg.base_url,
+                   model_name=cfg.chat_model, base_url=base,
                    api_key=cfg.api_key, lock_version=0,
-                   allow_empty_key=_is_local_endpoint("custom", cfg.base_url))
+                   allow_empty_key=_is_local_endpoint("custom", base))
 
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
+# 后端跑在容器里时，"本机"指容器自身而非宿主机，本地 Ollama/vLLM 会连不上
+_HOST_ALIAS_IN_CONTAINER = "host.docker.internal"
+
+
+def _host_alias() -> str:
+    """本地模型服务的可达主机名：容器内用宿主机别名，本机运行用 localhost。"""
+    return _HOST_ALIAS_IN_CONTAINER if os.path.exists("/.dockerenv") else "localhost"
+
+
+def _rewrite_local_url(base_url: str) -> str:
+    """把本地回环地址改写为当前运行环境可访问的主机名。
+
+    典型场景：管理员在 UI 里填 http://localhost:11434/v1（Ollama 跑在宿主机），
+    但后端容器里的 localhost 指向容器自身，所有本地模型调用都会 Connection refused。
+    解析运行期配置时统一改写，配置本身无需修改。
+    """
+    if not base_url:
+        return base_url
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return base_url
+    alias = _host_alias()
+    if host not in _LOCAL_HOSTS or host == alias:
+        return base_url
+    netloc = f"{alias}:{parsed.port}" if parsed.port else alias
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 def _is_local_endpoint(provider: str, base_url: str) -> bool:
@@ -171,9 +207,10 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
 
 
 def runtime_of(row: LlmModel) -> ModelRuntime:
+    base = _rewrite_local_url(row.base_url)
     return ModelRuntime(row.id, row.display_name, row.model_name,
-                        row.base_url, row.api_key or "", row.lock_version,
-                        _is_local_endpoint(row.provider, row.base_url), row.provider,
+                        base, row.api_key or "", row.lock_version,
+                        _is_local_endpoint(row.provider, base), row.provider,
                         bool(getattr(row, "supports_vision", 0)))
 
 
@@ -419,6 +456,8 @@ async def delete_model(model_id: int, lock_version: int) -> None:
 
 async def test_connection(req: ModelTestRequest) -> ModelTestResult:
     """最小化连通性测试：发一条小补全请求，验证地址/密钥/模型名三者可用。"""
+    # 与实际运行期保持一致的地址改写：容器内 localhost 需换成宿主机别名
+    req = req.model_copy(update={"base_url": _rewrite_local_url(req.base_url)})
     api_key = req.api_key
     provider = "custom"
     if req.id:
@@ -437,19 +476,22 @@ async def test_connection(req: ModelTestRequest) -> ModelTestResult:
     # 非对话类模型走各自协议的最小请求（对话端点对它们必然 400/404）
     # purpose 可能是逗号分隔的多值，取第一个匹配项决定测试方式
     purposes = {p.strip() for p in (req.purpose or "chat").split(",") if p.strip()}
+    # 防呆：地址已是重排端点却选了别的用途（如 embedding），继续测只会得到
+    # 阿里网关的 "input parameter requires json format"，直接提示改用途更明确
+    if "/services/rerank" in (req.base_url or "") and "rerank" not in purposes:
+        return ModelTestResult(ok=False, latency_ms=0,
+                               message="该地址是重排（rerank）端点，请把「用途」改为「检索精排」后再测试")
     if "embedding" in purposes:
-        return await _test_embedding(req, api_key)
+        return await _test_embedding(req, api_key, provider)
     if "rerank" in purposes:
         return await _test_rerank(req, api_key)
     if "speech" in purposes:
         return await _test_speech(req, api_key)
     if purposes == {"image_gen"}:
-        return ModelTestResult(ok=True, latency_ms=0,
-                               message="文生图需真实生成才能验证，请保存后在对话页实测")
+        return await _test_image(req, api_key, provider)
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     # 本地模型可能冷启动加载权重，给更长的等待
-    timeout = httpx.Timeout(60.0, connect=8.0) if allow_empty else httpx.Timeout(15.0, connect=8.0)
+    timeout = 60.0 if allow_empty else 15.0
     # 图片理解用途额外带一张 1x1 图：纯文本模型会直接 400，模型名不存在会 404
     content: object = "ping"
     if "vision" in purposes:
@@ -459,43 +501,57 @@ async def test_connection(req: ModelTestRequest) -> ModelTestResult:
                 "url": "data:image/png;base64," + _TEST_IMAGE_B64}},
         ]
     started = time.perf_counter()
+    transport = select_chat_transport(req.base_url, timeout=timeout)
+    # enable_thinking 是阿里系扩展字段，发往 OpenAI 官方端点会被判为未知参数
+    extra = {"enable_thinking": False} if "aliyuncs.com" in (req.base_url or "") else {}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{req.base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json={"model": req.model_name, "max_tokens": 8,
-                      "messages": [{"role": "user", "content": content}]},
-            )
+        await transport.complete(
+            base_url=req.base_url, api_key=api_key, model=req.model_name,
+            messages=[{"role": "user", "content": content}],
+            temperature=0.0, max_tokens=8, extra_body=extra)
         elapsed = int((time.perf_counter() - started) * 1000)
-        if resp.status_code == 200:
-            msg = "连通正常（已通过图片输入校验）" if "vision" in purposes else "连通正常"
-            return ModelTestResult(ok=True, latency_ms=elapsed, message=msg)
-        detail = resp.text[:300].replace("\n", " ")
+        msg = "连通正常（已通过图片输入校验）" if "vision" in purposes else "连通正常"
+        return ModelTestResult(ok=True, latency_ms=elapsed, message=msg)
+    except ModelCapabilityError as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
         return ModelTestResult(ok=False, latency_ms=elapsed,
-                               message=f"HTTP {resp.status_code}: {detail}")
+                               message=f"模型能力不匹配: {e}")
+    except RetryableTransportError as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=False, latency_ms=elapsed, message=f"连接失败: {e}")
+    except TransportStatusError as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=False, latency_ms=elapsed, message=str(e))
     except Exception as e:
         elapsed = int((time.perf_counter() - started) * 1000)
         logger.warning("model_test_failed", base_url=req.base_url, error=str(e))
         return ModelTestResult(ok=False, latency_ms=elapsed, message=f"连接失败: {e}")
+    finally:
+        await transport.aclose()
 
 
-async def _test_embedding(req: ModelTestRequest, api_key: str) -> ModelTestResult:
-    """向量模型：请求 /embeddings 并校验返回了向量。"""
+async def _test_embedding(req: ModelTestRequest, api_key: str, provider: str = "custom") -> ModelTestResult:
+    """向量模型：按协议策略请求 embedding 端点并校验返回了向量。
+
+    OpenAI 兼容走 {base}/embeddings；阿里原生走 /api/v1/services/embeddings/...，
+    由 model_protocols.select_embedding_protocol 统一选择。
+    """
+    from app.services.model_protocols import select_embedding_protocol
     started = time.perf_counter()
     try:
+        protocol = select_embedding_protocol(req.base_url)
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
             resp = await client.post(
-                f"{req.base_url.rstrip('/')}/embeddings",
+                protocol.endpoint(req.base_url),
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                json={"model": req.model_name, "input": ["ping"]},
+                json=protocol.build_payload(req.model_name, ["ping"], None, provider),
             )
         elapsed = int((time.perf_counter() - started) * 1000)
         if resp.status_code == 200:
-            data = resp.json().get("data") or []
-            dim = len(data[0].get("embedding") or []) if data else 0
+            vectors = protocol.parse(resp.json(), expected=1)
+            dim = len(vectors[0]) if vectors else 0
             return ModelTestResult(ok=True, latency_ms=elapsed,
-                                   message=f"向量化正常（维度 {dim}）")
+                                   message=f"向量化正常（{protocol.name} 协议，维度 {dim}）")
         return ModelTestResult(ok=False, latency_ms=elapsed,
                                message=f"HTTP {resp.status_code}: {resp.text[:300]}")
     except Exception as e:
@@ -513,8 +569,9 @@ async def _test_rerank(req: ModelTestRequest, api_key: str) -> ModelTestResult:
             resp = await client.post(
                 url, headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json=body)
-            if resp.status_code in (400, 422) and "documents" in body:
-                # TEI 只认 "texts" 字段
+            if (resp.status_code in (400, 422) and "documents" in body
+                    and "aliyuncs.com" not in url):
+                # TEI 只认 "texts" 字段；阿里端点不适用（改字段会掩盖真实错误）
                 body = {k: v for k, v in body.items() if k != "documents"} | {"texts": ["ping", "pong"]}
                 resp = await client.post(
                     url, headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
@@ -547,26 +604,53 @@ def _silent_wav_b64() -> str:
 
 
 async def _test_speech(req: ModelTestRequest, api_key: str) -> ModelTestResult:
-    """语音识别模型：发送一小段静音音频，验证模型名与鉴权可用。"""
+    """语音识别模型：发送一小段静音音频，验证模型名、鉴权与协议可用。
+
+    与运行期一致走策略传输：阿里 Qwen-ASR 用对话/原生多模态协议，
+    Whisper 类服务用 /audio/transcriptions，避免"配置能存但测试必失败"。
+    """
     started = time.perf_counter()
+    import base64
+
+    transport = select_speech_transport(req.base_url, req.model_name, timeout=30.0)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0)) as client:
-            resp = await client.post(
-                f"{req.base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                json={"model": req.model_name, "stream": False, "messages": [
-                    {"role": "user", "content": [
-                        {"type": "input_audio",
-                         "input_audio": {"data": f"data:;base64,{_silent_wav_b64()}",
-                                         "format": "wav"}},
-                    ]},
-                ]},
-            )
+        audio = base64.b64decode(_silent_wav_b64())
+        await transport.transcribe(base_url=req.base_url, api_key=api_key,
+                                   model=req.model_name, audio=audio, fmt="wav")
         elapsed = int((time.perf_counter() - started) * 1000)
-        if resp.status_code == 200:
-            return ModelTestResult(ok=True, latency_ms=elapsed, message="语音识别正常")
-        return ModelTestResult(ok=False, latency_ms=elapsed,
-                               message=f"HTTP {resp.status_code}: {resp.text[:300]}")
+        return ModelTestResult(ok=True, latency_ms=elapsed, message="语音识别正常")
+    except TransportStatusError as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=False, latency_ms=elapsed, message=str(e)[:300])
     except Exception as e:
         elapsed = int((time.perf_counter() - started) * 1000)
         return ModelTestResult(ok=False, latency_ms=elapsed, message=f"连接失败: {e}")
+    finally:
+        await transport.aclose()
+
+
+async def _test_image(req: ModelTestRequest, api_key: str, provider: str = "custom") -> ModelTestResult:
+    """文生图模型：真实提交一张小图并轮询，验证地址、密钥、模型名与协议可用。
+
+    与运行期一致走策略传输：阿里图像模型用原生异步任务（兼容模式的
+    /images/generations 并不存在），OpenAI 兼容端点用 SDK。
+    """
+    started = time.perf_counter()
+    transport = select_image_transport(
+        req.base_url, provider=provider, model=req.model_name,
+        poll_timeout_seconds=40.0, submit_timeout_seconds=15.0)
+    try:
+        urls = await transport.generate(
+            base_url=req.base_url, api_key=api_key, model=req.model_name,
+            prompt="一个蓝色圆形，极简风格", size="1024*1024", n=1)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=True, latency_ms=elapsed,
+                               message=f"文生图正常（已生成 {len(urls)} 张测试图）")
+    except ImageGenerationError as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=False, latency_ms=elapsed, message=str(e)[:300])
+    except Exception as e:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return ModelTestResult(ok=False, latency_ms=elapsed, message=f"连接失败: {e}")
+    finally:
+        await transport.aclose()

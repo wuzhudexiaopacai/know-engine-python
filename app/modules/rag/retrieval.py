@@ -40,6 +40,13 @@ _MIN_TERM_OVERLAP = 0.4
 _SIG_TOP1_FLOOR = 0.30
 _SIG_REL_MARGIN = 0.35
 
+# 阿里 / Jina / vLLM 直接返回 0~1 的 relevance_score（已是概率），不能再套 sigmoid
+# （sigmoid(0.99)=0.73、sigmoid(0.2)=0.55，会把阈值门控彻底压平，无关片段全部混进引用）。
+# 概率分支使用更严格的相对差距 + 绝对下限：
+_PROB_TOP1_FLOOR = 0.30      # 最高分都低于此值 → 没有相关资料
+_PROB_REL_MARGIN = 0.50      # 概率尺度上只保留与 top1 差距 0.5 以内的片段
+_PROB_MIN_KEEP = 0.20        # 绝对下限：精排认为基本不相关的片段一律不进引用
+
 # 邻接兜底参数。
 # 非标准文档里"题目"与"答案"常被切成相邻两段（或历史数据已经这样入库），
 # 只召回其中一段会出现"引用只有标题没有正文"。命中分段过短时补同文档 order±1，
@@ -211,15 +218,22 @@ async def aggregate(query_text: str, chunks: list[RetrievedChunk]) -> list[Retri
     pairs = await get_rerank().rerank(query_text, [c.text for c in chunks],
                                       top_n=cfg.reranked_top_k)
     if pairs is not None:
-        # 精排分是原始 logits，先 sigmoid 归一，再按「top1 下限 + 相对差距」双重门控。
-        # 只用固定阈值会把 top1 附近的相关片段一起误杀（实测"事务隔离级别"正确片段 logit=-1.37）。
-        probs = [(_sigmoid(score), idx, score) for idx, score in pairs]
+        scores = [s for _, s in pairs]
+        # 分数语义判别：全部落在 0~1 视为已归一化的相关性概率（阿里/Jina/vLLM），
+        # 直接使用；出现负数或 >1 才按 Cross-Encoder logits 做 sigmoid。
+        as_probability = bool(scores) and all(0.0 <= s <= 1.0 for s in scores)
+        probs = ([(s, idx, s) for idx, s in pairs] if as_probability
+                 else [(_sigmoid(s), idx, s) for idx, s in pairs])
         top_prob = max(p for p, _, _ in probs) if probs else 0.0
-        if top_prob < _SIG_TOP1_FLOOR:
+        floor = _PROB_TOP1_FLOOR if as_probability else _SIG_TOP1_FLOOR
+        if top_prob < floor:
             logger.info("rerank_no_relevant", candidates=len(chunks),
                         top_prob=round(top_prob, 4))
             return []
-        keep_above = top_prob - _SIG_REL_MARGIN
+        if as_probability:
+            keep_above = max(top_prob - _PROB_REL_MARGIN, _PROB_MIN_KEEP)
+        else:
+            keep_above = top_prob - _SIG_REL_MARGIN
         ranked: list[RetrievedChunk] = []
         dropped = 0
         for prob, idx, score in probs:
@@ -231,11 +245,11 @@ async def aggregate(query_text: str, chunks: list[RetrievedChunk]) -> list[Retri
             if c.similarity is None:
                 c.similarity = round(prob, 4)
             ranked.append(c)
-        # 概率降序（原始 logits 同序，这里显式排序防上游乱序）
+        # 概率降序（原始分数同序，这里显式排序防上游乱序）
         ranked.sort(key=lambda c: -(c.rerank_score or 0.0))
         logger.info("rerank_done", pairs=len(pairs), kept=len(ranked), dropped=dropped,
                     top_prob=round(top_prob, 4), keep_above=round(keep_above, 4),
-                    min_logit=cfg.min_score)
+                    as_probability=as_probability, min_logit=cfg.min_score)
         return ranked[:cfg.reranked_top_k]
 
     # 无精排可用（本地部署常见：未配 Rerank 模型）：用问题词命中率做相关性校验。

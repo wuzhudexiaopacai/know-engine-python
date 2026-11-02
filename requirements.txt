@@ -28,6 +28,11 @@ minio>=7.2.0
 # ---------- HTTP 客户端（LLM / Embedding / 文档解析服务） ----------
 httpx>=0.27.0
 
+# ---------- 模型官方 SDK（对话/视觉/语音/文生图统一走 OpenAI 兼容协议） ----------
+# 国内主流供应商（阿里百炼 compatible-mode、智谱、DeepSeek、Kimi）均提供
+# OpenAI 兼容端点；向量化与精排仍走自研协议（见 app/services/model_protocols.py）
+openai>=1.40.0
+
 # ---------- 弹性工程：重试 / 限速 / 熔断 ----------
 tenacity>=8.5.0                  # 指数退避重试
 
@@ -56,3 +61,5 @@ itsdangerous>=2.2.0              # 签名令牌
 # ---------- 可观测性（结构化日志） ----------
 structlog>=24.1.0
 colorama>=0.4.6                  # Windows 彩色控制台（非 Windows 平台为空操作依赖）
+
+pytest>=8.0

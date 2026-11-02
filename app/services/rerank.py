@@ -1,8 +1,13 @@
-"""Rerank 精排服务（DashScope gte-rerank API）。
+"""Rerank 精排服务（策略模式：协议差异封装在 model_protocols.RerankProtocol）。
 
 本服务不加载本地 ONNX 大模型（镜像/依赖过重），改用官方 Rerank API：
 - API 失败/超时/熔断 → 降级为 RRF（Reciprocal Rank Fusion）融合多路召回排名，
   零外部依赖且仍是"多证据投票"，精排质量可接受。
+
+协议选择见 app.services.model_protocols.select_rerank_protocol：
+- 阿里原生协议（公有云 dashscope 与专属 MaaS 域名共用）
+  `/api/v1/services/rerank/text-rerank/text-rerank`：input/parameters 包裹
+- OpenAI 兼容（`/compatible-mode/v1/rerank`）与 Jina/llama.cpp/TEI/vLLM：顶层 query/documents
 """
 
 from __future__ import annotations
@@ -15,11 +20,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ra
 from app.config.settings import get_settings
 from app.core.logging import get_logger
 from app.infra.circuit_breaker import get_breaker
+from app.services.model_protocols import (RerankProtocol, is_aliyun_host,
+                                          select_rerank_protocol)
 
 logger = get_logger("app.rerank")
-
-# 本地 rerank 服务（llama.cpp --reranking / TEI / Infinity / vLLM）统一暴露 /rerank
-_RERANK_PATH = "/rerank"
 
 # 送精排前的体量约束：cross-encoder 按 (query, doc) 对吃上下文，
 # 本地 llama.cpp 常以 -c 4096 启动，整段原文 × 几十条一起送会直接 500。
@@ -28,30 +32,32 @@ _MAX_DOC_CHARS = 1000
 _MAX_DOCS = 20
 
 
-def rerank_endpoint(base_url: str) -> str:
-    """把配置里的服务地址补成真正的 rerank 端点。
+# ------------------------------------------------------------------
+# 兼容薄封装：历史调用点（含 model/service.py 测试连接）继续可用
+# ------------------------------------------------------------------
+def is_dashscope_native(url: str) -> bool:
+    """是否为阿里原生文本排序协议（按路径判断，专属 MaaS 域名同样命中）。"""
+    return select_rerank_protocol(url).name == "aliyun_native"
 
-    DashScope 原生地址本身含 rerank，原样使用；本地服务通常只填根地址
-    （如 http://localhost:8080），补 /rerank；vLLM/Jina 的 /v1 前缀同样适用。
-    """
-    base = (base_url or "").rstrip("/")
-    if not base:
+
+def is_aliyun_endpoint(url: str) -> bool:
+    """阿里系端点：其 400 不适用 TEI 的 texts 字段兜底，避免把报文改坏后二次失败。"""
+    return is_aliyun_host(url)
+
+
+def rerank_endpoint(base_url: str) -> str:
+    """把配置里的服务地址补成真正的 rerank 端点（委托协议策略）。"""
+    if not (base_url or "").strip():
         return get_settings().rerank.base_url
-    return base if "rerank" in base else f"{base}{_RERANK_PATH}"
+    return select_rerank_protocol(base_url).endpoint(base_url)
 
 
 def build_rerank_body(url: str, model: str, query: str,
                       documents: list[str], top_n: int) -> dict:
-    """按实现构造请求体：DashScope 用 input 包裹；其余走 Jina 风格（顶层 query/documents）。
-
-    llama.cpp / vLLM / Infinity 都接受 Jina 风格；TEI 例外——它只认 "texts" 字段，
-    由调用方在 400/422 时换 {"query", "texts"} 重试一次。
-    """
-    if "dashscope" in url:
-        return {"model": model,
-                "input": {"query": query, "documents": documents},
-                "parameters": {"top_n": top_n, "return_documents": False}}
-    return {"model": model, "query": query, "documents": documents, "top_n": top_n}
+    """按协议策略构造请求体（instruct 取全局配置，仅阿里原生协议生效）。"""
+    instruct = (get_settings().rerank.instruct or "").strip()
+    return select_rerank_protocol(url).build_body(
+        model, query, documents, top_n, instruct=instruct)
 
 
 def parse_rerank(data) -> list[tuple[int, float]]:
@@ -140,12 +146,15 @@ class RerankService:
         )
         async def _call() -> list[tuple[int, float]]:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-            body = build_rerank_body(url, model, query, documents, top_n)
+            protocol: RerankProtocol = select_rerank_protocol(url)
+            instruct = (self.cfg.instruct or "").strip()
+            body = protocol.build_body(model, query, documents, top_n, instruct=instruct)
             resp = await self._client.post(url, headers=headers, json=body)
-            # TEI 只认 "texts" 不认 "documents"：校验失败时切换字段重试一次
-            if resp.status_code in (400, 422) and "documents" in body:
-                body = {k: v for k, v in body.items() if k != "documents"} | {"texts": documents}
-                resp = await self._client.post(url, headers=headers, json=body)
+            # TEI 只认 "texts" 不认 "documents"：校验失败时按协议策略决定是否换字段重试。
+            # 阿里原生协议返回 None（其 400 是参数/鉴权问题，改字段只会掩盖真实错误）。
+            fallback = protocol.texts_fallback_body(body, model)
+            if resp.status_code in (400, 422) and fallback is not None:
+                resp = await self._client.post(url, headers=headers, json=fallback)
             resp.raise_for_status()
             pairs = parse_rerank(resp.json())
             if not pairs:      # 空结果按失败处理，交给上层降级 RRF

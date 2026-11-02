@@ -140,6 +140,8 @@ class RerankConfig(BaseSettings):
     model: str = "gte-rerank-v2"
     top_n: int = 5
     timeout_seconds: float = 10.0
+    # 可选：阿里原生协议支持检索意图指令（qwen3-rerank 推荐携带），留空则不传
+    instruct: str = ""
 
 
 class VectorConfig(BaseSettings):

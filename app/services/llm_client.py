@@ -1,20 +1,25 @@
-"""LLM 客户端（OpenAI 兼容协议，默认 DashScope）。
+"""LLM 客户端（对话/视觉/记忆共用）。
+
+传输实现由策略模式选择（app.services.model_transports.ChatTransport）：
+- 默认官方 openai SDK：覆盖阿里百炼 compatible-mode、智谱、DeepSeek、Kimi
+  以及本地 vLLM/Ollama 等全部 OpenAI 兼容端点；
+- SDK 不可用时自动回落 httpx 直连，行为完全一致。
 
 弹性设计（对应"降级重试"工程要求）：
 1. tenacity 指数退避 + 抖动重试：仅对可重试异常（超时/连接/429/5xx）重试，
    401/403 等配置类错误立即失败，防止无意义重试放大故障
-2. CircuitBreaker 熔断：DashScope 持续故障时快速失败，由上层走降级路径
+2. CircuitBreaker 熔断：上游持续故障时快速失败，由上层走降级路径
 3. fallback：无 API Key / 熔断打开时 available=False，管道各环节自行降级
    （跳过改写、默认路由、通用对话直答），而不是整条链路报错
-4. 流式：SSE 增量解析，token 级产出；生成中途中断时返回已产出部分
+4. 流式：token 级产出；建连阶段可重试，流出中途断裂时保留已产出部分
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
+import random
 from typing import AsyncIterator
 
-import httpx
 from tenacity import (
     retry, retry_if_exception, stop_after_attempt, wait_random_exponential,
 )
@@ -23,24 +28,17 @@ from app.config.settings import get_settings
 from app.core.logging import get_logger
 from app.infra.circuit_breaker import CircuitOpenError, get_breaker
 from app.infra.json_fix import fix_json
+from app.services.model_transports import (
+    ChatTransport, ModelCapabilityError, RetryableTransportError,
+    select_chat_transport,
+)
 
 logger = get_logger("app.llm")
 
 
-class ModelCapabilityError(Exception):
-    """模型能力不匹配（如把纯文本模型当视觉模型用）：配置问题，不是依赖故障。
-
-    单独定义的意义：上层可据此立即放弃剩余任务并给出明确提示，
-    熔断器也不会把它计入失败窗口（否则 50 张图会被误判成依赖不可用）。
-    """
-
-
-class _Retryable(Exception):
-    """内部标记异常：值得重试的瞬时故障。"""
-
-
 def _is_retryable(exc: BaseException) -> bool:
-    return isinstance(exc, (_Retryable, httpx.TimeoutException, httpx.ConnectError))
+    """仅瞬时故障可重试：传输层已把超时/连接/429/5xx统一映射为 Retryable。"""
+    return isinstance(exc, RetryableTransportError)
 
 
 class LlmClient:
@@ -60,10 +58,8 @@ class LlmClient:
         self._allow_empty_key = allow_empty_key
         self.supports_vision = supports_vision
         self.chat_model = chat_model or cfg.chat_model
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(cfg.timeout_seconds, connect=10.0),
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-        )
+        self._transport: ChatTransport = select_chat_transport(
+            self._base, timeout=cfg.timeout_seconds)
         self._breaker = get_breaker(f"llm:{self._base}:{self.chat_model}",
                                     failure_threshold=5, recovery_seconds=30)
 
@@ -73,13 +69,20 @@ class LlmClient:
         """无 Key 且未显式允许匿名端点时视为不可用（管道将走降级路径）。"""
         return bool(self._api_key) or self._allow_empty_key
 
-    def _headers(self) -> dict[str, str]:
-        """有密钥才注入 Bearer；本地模型通常不校验，避免空 Authorization 头。"""
-        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-
     def _thinking_off(self) -> dict:
-        """本地推理模型（如 qwen3）默认先产出一大段思维链，关闭后首 token 可从分钟级降到秒级。"""
+        """本地推理模型（如 qwen3）默认先产出一大段思维链，关闭后首 token可从分钟级降到秒级。"""
         return {"reasoning_effort": "none"} if self._allow_empty_key else {}
+
+    def _completion_extra(self) -> dict:
+        """非标准参数的附加字段：只发给能识别它们的端点，避免 OpenAI 官方 400。
+
+        enable_thinking 是阿里系扩展字段（compatible-mode / MaaS），
+        发给 api.openai.com 会被当作未知参数拒绝。
+        """
+        body = self._thinking_off()
+        if "aliyuncs.com" in self._base:
+            body["enable_thinking"] = False
+        return body
 
     @property
     def signature(self) -> str:
@@ -92,7 +95,7 @@ class LlmClient:
         return self.chat_model
 
     async def close(self) -> None:
-        await self._client.aclose()
+        await self._transport.aclose()
 
     # ---------------- 非流式 ----------------
     async def chat(self, prompt: str, *, system: str | None = None,
@@ -122,6 +125,7 @@ class LlmClient:
 
     async def _chat_with_retry(self, messages: list, model: str,
                                temperature: float, max_tokens: int) -> str:
+        extra_body = self._completion_extra()
 
         @retry(
             retry=retry_if_exception(_is_retryable),
@@ -130,17 +134,10 @@ class LlmClient:
             reraise=True,
         )
         async def _call() -> str:
-            resp = await self._client.post(
-                f"{self._base}/chat/completions",
-                headers=self._headers(),
-                json={"model": model, "messages": messages,
-                      "temperature": temperature, "max_tokens": max_tokens,
-                      # 辅助小任务关闭 CoT 思考模式，降低延迟
-                      "enable_thinking": False, **self._thinking_off()},
-            )
-            self._raise_for_status(resp)
-            data = resp.json()
-            return data["choices"][0]["message"]["content"] or ""
+            return await self._transport.complete(
+                base_url=self._base, api_key=self._api_key, model=model,
+                messages=messages, temperature=temperature, max_tokens=max_tokens,
+                extra_body=extra_body)
 
         return await _call()
 
@@ -159,87 +156,53 @@ class LlmClient:
         if messages is None:
             messages = ([{"role": "system", "content": system}] if system else []) + \
                        [{"role": "user", "content": prompt}]
+        extra_body = self._thinking_off()
 
-        stream_ctx = await self._open_stream_with_retry(messages, temperature)
-        try:
-            async for token in self._parse_sse_stream(stream_ctx["resp"]):
-                yield token
-            await self._breaker._on_success()
-        except httpx.HTTPError as e:
-            # 流出中途断裂：记录后正常结束，已推送内容仍然有效
-            logger.warning("llm_stream_broken", error=str(e))
-        finally:
-            # 显式关闭 stream 上下文（cm 已被 __aenter__ 消费，只能调 __aexit__）
-            try:
-                await stream_ctx["cm"].__aexit__(None, None, None)
-            except Exception:  # pragma: no cover - 关闭异常无需上抛
-                pass
-
-    async def _open_stream_with_retry(self, messages: list, temperature: float) -> dict:
-        """流式建连（带重试）：成功返回已打开的 stream 上下文。"""
+        started = False
         last_error: Exception | None = None
-        for attempt in range(self.cfg.max_retries + 1):
+        attempts = self.cfg.max_retries + 1
+        for attempt in range(attempts):
             try:
-                cm = self._client.stream(
-                    "POST", f"{self._base}/chat/completions",
-                    headers=self._headers(),
-                    json={"model": self.chat_model, "messages": messages,
-                          "temperature": temperature, "stream": True,
-                          **self._thinking_off()},
-                )
-                resp = await cm.__aenter__()
-                if resp.status_code >= 500 or resp.status_code == 429:
-                    await cm.__aexit__(None, None, None)
-                    raise _Retryable(f"LLM 流式建连失败: HTTP {resp.status_code}")
-                if resp.status_code >= 400:
-                    await cm.__aexit__(None, None, None)
-                    resp.raise_for_status()
-                return {"resp": resp, "cm": cm}
-            except (httpx.TimeoutException, httpx.ConnectError, _Retryable) as e:
+                async for token in self._transport.stream(
+                        base_url=self._base, api_key=self._api_key,
+                        model=self.chat_model, messages=messages,
+                        temperature=temperature, extra_body=extra_body):
+                    started = True
+                    yield token
+                await self._breaker._on_success()
+                return
+            except RetryableTransportError as e:
+                if started:
+                    # 流出中途断裂：已推送内容仍然有效，按部分答案正常收尾
+                    logger.warning("llm_stream_broken", error=str(e))
+                    return
                 last_error = e
-                logger.warning("llm_stream_retry", attempt=attempt + 1, error=str(e))
+                logger.warning("llm_stream_retry", attempt=attempt + 1, error=str(e),
+                               endpoint=self._base, model=self.chat_model)
+                if attempt + 1 < attempts:
+                    # 指数退避 + 抖动：瞬时网络抖动（DNS/连接重置）需要时间恢复，
+                    # 连续同秒重试只会把一次抖动放大成一轮对话失败
+                    await asyncio.sleep(min(0.5 * 2 ** attempt, 4.0)
+                                        + random.uniform(0, 0.3))
                 continue
-        await self._breaker._on_failure()
-        raise CircuitOpenError(f"LLM 流式建连失败: {last_error}")
-
-    @staticmethod
-    async def _parse_sse_stream(resp: httpx.Response) -> AsyncIterator[str]:
-        """OpenAI SSE 协议解析：data: {...} / data: [DONE]。"""
-        async for line in resp.aiter_lines():
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            try:
-                chunk = json.loads(payload)
-                delta = chunk["choices"][0].get("delta", {}).get("content")
-                if delta:
-                    yield delta
-            except (json.JSONDecodeError, KeyError, IndexError):
-                # 兼容网关偶发的心跳/半包行，跳过而不中断流
-                continue
-
-    # ---------------- 状态码分类 ----------------
-    @staticmethod
-    def _raise_for_status(resp: httpx.Response) -> None:
-        if resp.status_code == 200:
-            return
-        if resp.status_code in (429, 500, 502, 503, 504):
-            raise _Retryable(f"LLM 依赖抖动: HTTP {resp.status_code}")
-        body = resp.text[:300]
-        low = body.lower()
-        # 400/422 中的「多模态不支持」是选错模型，重试与熔断都无意义
-        if resp.status_code in (400, 422) and (
-                "multimodal" in low or "image input" in low
-                or "does not support image" in low or "unsupported image" in low):
-            raise ModelCapabilityError("模型不支持图片输入")
-        # 404 模型不存在（如把 embedding 模型名填进视觉配置）：配置错误，同样不计熔断
-        if resp.status_code == 404 and ("not found" in low or "not_found" in low):
-            raise ModelCapabilityError("模型不存在或名称错误")
-        # 401/403/404/400：配置或请求问题，重试无意义
-        raise httpx.HTTPStatusError(f"LLM 调用失败: HTTP {resp.status_code} {body[:200]}",
-                                    request=resp.request, response=resp)
+            except Exception as e:
+                if started:
+                    logger.warning("llm_stream_broken", error=str(e))
+                    return
+                await self._breaker._on_failure()
+                raise
+        # 建连多次失败：降级为非流式补全。SSE 链路异常但普通请求仍可用时，
+        # 用户依然能拿到完整答案（整段作为一次 token 下发）
+        logger.warning("llm_stream_fallback_complete", endpoint=self._base,
+                       model=self.chat_model, error=str(last_error))
+        try:
+            text = await self._chat_with_retry(messages, self.chat_model, temperature, 2000)
+        except Exception as e:
+            await self._breaker._on_failure()
+            raise CircuitOpenError(f"LLM 流式建连失败: {last_error}") from e
+        if text:
+            yield text
+        await self._breaker._on_success()
 
 
 _client: LlmClient | None = None

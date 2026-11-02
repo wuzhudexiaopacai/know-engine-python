@@ -150,6 +150,10 @@ services:
       STORAGE__SECURE: "false"
     ports:
       - "8009:8009"
+    # 本地模型（Ollama/vLLM）跑在宿主机时，容器内用 host.docker.internal 访问；
+    # Docker Desktop 自带该别名，Linux Docker 需显式映射到网关
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - api-data:/app/data          # 分片上传会话等本地态；对象文件在 MinIO
     healthcheck:

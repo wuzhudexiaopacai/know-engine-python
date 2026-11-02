@@ -1,24 +1,27 @@
-"""语音转写服务（STT，OpenAI Whisper 兼容协议 /v1/audio/transcriptions）。
+"""语音转写服务（STT）。
 
-兼容两类后端：
-- DashScope（阿里云百炼 Paraformer）：base_url 含 dashscope，鉴权用 Bearer Key
-- FunASR（本地 SenseVoice / Paraformer）：base_url 为本地地址，免鉴权
+传输实现由策略选择（app.services.model_transports.SpeechTransport）：
+- 阿里百炼 qwen3-asr-flash → OpenAI 兼容 /chat/completions（音频以 input_audio 内容块传入），
+  原生 /api/v1/services 端点 → DashScope 同步多模态生成接口；
+- 其余（Whisper / 本地 FunASR / 自建兼容服务）→ /audio/transcriptions（SDK 或 httpx）。
 
 设计（沿用 llm_client 的弹性四件套）：
-- tenacity 仅对超时/连接类瞬时故障重试；401/403/404（模型未开通等配置类错误）
-  快速失败并携带可读信息，由 controller 转成 200 + success=false 的降级提示
+- tenacity 仅对超时/连接/429/5xx 瞬时故障重试；401/403/404（模型未开通等
+  配置类错误）快速失败并携带可读信息，由 controller 转成 200 + success=false
 - CircuitBreaker 熔断：上游持续故障时快速失败
 - 免鉴权端点（本地 FunASR）allow_empty_key，未配 Key 也视为可用
 """
 
 from __future__ import annotations
 
-import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from app.config.settings import get_settings
 from app.core.logging import get_logger
 from app.infra.circuit_breaker import CircuitOpenError, get_breaker
+from app.services.model_transports import (
+    RetryableTransportError, TransportStatusError, select_speech_transport,
+)
 
 logger = get_logger("app.speech")
 
@@ -28,7 +31,7 @@ class SpeechError(Exception):
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
+    return isinstance(exc, RetryableTransportError)
 
 
 class SpeechService:
@@ -36,8 +39,6 @@ class SpeechService:
         cfg = get_settings().speech
         self.cfg = cfg
         self._base = cfg.base_url.rstrip("/")
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(cfg.timeout_seconds, connect=10.0))
         self._breaker = get_breaker("speech", failure_threshold=3, recovery_seconds=60)
 
     @property
@@ -50,7 +51,7 @@ class SpeechService:
         return bool(self.api_key)
 
     async def close(self) -> None:
-        await self._client.aclose()
+        """传输客户端按请求创建并关闭，此处无需释放资源。"""
 
     async def _resolve(self) -> tuple[str, str, str, bool]:
         """解析当前生效的语音模型：(base_url, api_key, model_name, allow_empty)。
@@ -76,17 +77,22 @@ class SpeechService:
             raise SpeechError("录音过长，请缩短后重试")
         try:
             return await self._breaker.call(self._transcribe_with_retry, audio, fmt,
-                                            base_url, api_key, model_name, allow_empty)
+                                            base_url, api_key, model_name)
         except SpeechError:
             raise
         except CircuitOpenError:
             raise SpeechError("语音识别服务暂时不可用，请稍后重试")
+        except TransportStatusError as e:
+            raise SpeechError(f"语音识别调用失败: {e}") from e
         except Exception as e:
             logger.warning("speech_transcribe_failed", error=str(e))
             raise SpeechError("语音识别失败，请稍后重试") from e
 
-    async def _transcribe_with_retry(self, audio: bytes, fmt: str, base_url: str,
-                                     api_key: str, model_name: str, allow_empty: bool) -> str:
+    async def _transcribe_with_retry(self, audio: bytes, fmt: str,
+                                     base_url: str, api_key: str,
+                                     model_name: str) -> str:
+        transport = select_speech_transport(base_url, model_name,
+                                            timeout=self.cfg.timeout_seconds)
 
         @retry(
             retry=retry_if_exception(_is_retryable),
@@ -95,27 +101,14 @@ class SpeechService:
             reraise=True,
         )
         async def _call() -> str:
-            # OpenAI Whisper 兼容接口：multipart 表单上传音频文件
-            # FunASR / DashScope Paraformer 均支持此协议
-            files = {"file": (f"audio.{fmt}", audio, f"audio/{fmt}")}
-            data = {"model": model_name, "response_format": "json"}
-            headers = {}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            resp = await self._client.post(
-                f"{base_url.rstrip('/')}/v1/audio/transcriptions",
-                headers=headers, data=data, files=files)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                raise SpeechError(f"转写上游抖动: HTTP {resp.status_code}")
-            if resp.status_code >= 400:
-                raise SpeechError(
-                    f"语音识别调用失败: HTTP {resp.status_code} {resp.text[:200]}")
-            data_resp = resp.json()
-            # OpenAI 协议返回 {"text": "..."}；verbose_json 含更多字段
-            text = data_resp.get("text") or ""
-            return text.strip()
+            return await transport.transcribe(
+                base_url=base_url, api_key=api_key, model=model_name,
+                audio=audio, fmt=fmt)
 
-        return await _call()
+        try:
+            return await _call()
+        finally:
+            await transport.aclose()
 
 
 def detect_audio_format(content_type: str, fallback: str = "wav") -> str:

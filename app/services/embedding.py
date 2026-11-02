@@ -1,4 +1,4 @@
-"""Embedding 服务（OpenAI 兼容 /embeddings）。
+"""Embedding 服务（策略模式：协议差异封装在 model_protocols.EmbeddingProtocol）。
 
 模型来源：后台「模型配置 → 用途=文本向量化」绑定的模型优先；
 未配置时回退环境变量 LLM__EMBEDDING_MODEL。
@@ -8,6 +8,10 @@
 - 降级路径：远端不可用时使用本地"哈希 n-gram 投影"向量 ——
   无语义能力但保证入库/检索链路不中断（日志标注 fallback 防误当生产质量）
 - 维度一致性：本地降级向量同样输出 cfg.embedding_dimensions 维
+
+协议选择见 app.services.model_protocols.select_embedding_protocol：
+- OpenAI 兼容（`/embeddings`，data[].embedding 保序）：OpenAI / 百炼兼容模式 / Ollama / vLLM
+- 阿里原生（`/api/v1/services/embeddings/...`，output.embeddings 保序）：公有云与专属 MaaS
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_
 from app.config.settings import get_settings
 from app.core.logging import get_logger
 from app.infra.circuit_breaker import get_breaker
+from app.services.model_protocols import select_embedding_protocol
 
 logger = get_logger("app.embedding")
 
@@ -49,7 +54,7 @@ class EmbeddingService:
         ES 索引按固定维度建，维度错配会让 KNN 直接 400，因此维度必须跟着模型走。
         探测失败（服务未起/无 Key）时沿用配置维度。
         """
-        base_url, api_key, model_name, allow_empty, _provider = await self._resolve()
+        base_url, api_key, model_name, allow_empty, provider = await self._resolve()
         key = (base_url, model_name)
         if key == self._dim_key:
             return self.dim
@@ -57,15 +62,17 @@ class EmbeddingService:
             self._dim_key = key
             return self.dim
         try:
+            protocol = select_embedding_protocol(base_url)
             resp = await self._client.post(
-                f"{base_url.rstrip('/')}/embeddings",
+                protocol.endpoint(base_url),
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                json={"model": model_name, "input": ["dim-probe"]})
+                json=protocol.build_payload(model_name, ["dim-probe"], None, provider))
             resp.raise_for_status()
-            emb = resp.json()["data"][0].get("embedding") or []
+            vectors = protocol.parse(resp.json(), expected=1)
+            emb = vectors[0] if vectors else []
             if emb and len(emb) != self.dim:
                 logger.info("embedding_dim_detected", model=model_name,
-                            dim=len(emb), was=self.dim)
+                            dim=len(emb), was=self.dim, protocol=protocol.name)
                 self.dim = len(emb)
         except Exception as e:
             logger.warning("embedding_dim_probe_failed", model=model_name,
@@ -118,6 +125,7 @@ class EmbeddingService:
     # ---------------- 远端调用 ----------------
     async def _embed_batch(self, batch: list[str]) -> list[np.ndarray]:
         base_url, api_key, model_name, allow_empty, provider = await self._resolve()
+        protocol = select_embedding_protocol(base_url)
 
         @retry(
             retry=retry_if_exception(lambda e: isinstance(
@@ -128,13 +136,11 @@ class EmbeddingService:
             reraise=True,
         )
         async def _call() -> list[np.ndarray]:
-            payload = {"model": model_name, "input": batch,
-                       "encoding_format": "float"}
-            # 只有确定支持 dimensions 参数的供应商才传，避免本地/自定义端点 400
-            if provider in ("aliyun", "bailian", "openai", "zhipu"):
-                payload["dimensions"] = self.dim
+            # 维度探测已确定 self.dim；支持维度参数的协议/供应商按该值固定输出，
+            # 保证与 ES 索引维度一致（换模型时索引重建逻辑见 vector_store.ensure_index）
+            payload = protocol.build_payload(model_name, batch, self.dim, provider)
             resp = await self._client.post(
-                f"{base_url.rstrip('/')}/embeddings",
+                protocol.endpoint(base_url),
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json=payload,
             )
@@ -142,10 +148,8 @@ class EmbeddingService:
                 err = httpx.HTTPStatusError("embedding 依赖抖动", request=resp.request, response=resp)
                 raise err
             resp.raise_for_status()
-            data = resp.json()["data"]
-            # OpenAI 协议按 index 保序返回，显式排序防乱序
-            data.sort(key=lambda d: d["index"])
-            return [np.array(d["embedding"], dtype=np.float32) for d in data]
+            vectors = protocol.parse(resp.json(), expected=len(batch))
+            return [np.array(v, dtype=np.float32) for v in vectors]
 
         if not api_key and not allow_empty:
             raise RuntimeError("未配置向量模型 API Key，embedding 走本地降级向量")
