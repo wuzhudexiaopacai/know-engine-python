@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 上传对话框：选择文件 + 切片/入库配置，驱动分片上传编排
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { UploadFile, UploadUserFile } from 'element-plus'
 import { useChunkedUpload } from '../composables/useChunkedUpload'
@@ -92,9 +92,21 @@ async function submit(): Promise<void> {
   }
 }
 
+function resetPicked(): void {
+  // 关闭/重开对话框时清空已选文件，避免下次打开仍显示上一次的文件（像已上传过一样）
+  rawFile.value = null
+  fileList.value = []
+}
+
+// 每次打开对话框都从干净状态开始：上一次上传的文件不应再出现在列表里
+watch(visible, (v) => {
+  if (v) resetPicked()
+})
+
 function close(): void {
   if (busy.value) cancel()
   visible.value = false
+  resetPicked()
 }
 </script>
 
@@ -104,7 +116,7 @@ function close(): void {
     <el-form label-position="top" :disabled="busy">
       <el-form-item label="文件" required>
         <el-upload
-          :file-list="fileList"
+          v-model:file-list="fileList"
           :auto-upload="false"
           :limit="1"
           drag
