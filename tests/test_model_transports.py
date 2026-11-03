@@ -123,6 +123,22 @@ class TestSDKChatTransport:
         assert kwargs["extra_body"] == {"enable_thinking": False}
         assert asyncio.run(transport.aclose()) is None
 
+    def test_complete_with_tools_parses_tool_calls(self):
+        call = SimpleNamespace(id="c1",
+                               function=SimpleNamespace(name="s__search",
+                                                        arguments='{"q":"x"}'))
+        message = SimpleNamespace(content=None, tool_calls=[call])
+        fake = _FakeChatClient(SimpleNamespace(
+            choices=[SimpleNamespace(message=message)]))
+        transport = mt.OpenAISDKChatTransport(client_factory=lambda **_: fake)
+        text, calls = asyncio.run(transport.complete_with_tools(
+            base_url=COMPAT, api_key="k", model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.3, max_tokens=100,
+            tools=[{"type": "function", "function": {"name": "s__search"}}]))
+        assert text == ""
+        assert calls == [{"id": "c1", "name": "s__search", "arguments": '{"q":"x"}'}]
+
     def test_stream_yields_delta_and_skips_empty_choices(self):
         chunks = [
             SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="你"))]),

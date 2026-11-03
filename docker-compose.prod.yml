@@ -137,6 +137,9 @@ services:
       # ---- 外部模型（可选；不配置则走降级链路）----
       LLM__API_KEY: ${LLM_API_KEY:-}
       LLM__BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      # ---- MCP 外部工具（联网搜索等；默认关闭，servers 为 JSON 数组）----
+      MCP__ENABLED: ${MCP_ENABLED:-false}
+      MCP__SERVERS: ${MCP_SERVERS:-[]}
       # ---- 中间件：容器内用服务名，端口用容器内部端口 ----
       DB__URL: mysql+aiomysql://know_engine:know_engine@mysql:3306/know_engine?charset=utf8mb4
       DB__FALLBACK_SQLITE: "false"

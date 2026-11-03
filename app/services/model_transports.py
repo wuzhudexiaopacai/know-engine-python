@@ -130,6 +130,17 @@ class ChatTransport(ABC):
                        messages: list, temperature: float, max_tokens: int,
                        extra_body: dict | None = None) -> str: ...
 
+    async def complete_with_tools(self, *, base_url: str, api_key: str, model: str,
+                                  messages: list, temperature: float, max_tokens: int,
+                                  tools: list, extra_body: dict | None = None,
+                                  ) -> tuple[str, list[dict]]:
+        """带工具描述的非流式补全：返回 (文本, 工具调用列表)。
+
+        工具调用元素为 {"id", "name", "arguments"(JSON 字符串)}。
+        默认实现不支持工具（如本地小模型端点），由上层降级为无工具生成。
+        """
+        raise ModelCapabilityError(f"{self.name} 传输不支持工具调用")
+
     @abstractmethod
     def stream(self, *, base_url: str, api_key: str, model: str,
                messages: list, temperature: float,
@@ -175,6 +186,24 @@ class OpenAISDKChatTransport(ChatTransport):
             _raise_sdk(e)
         content = resp.choices[0].message.content
         return content or ""
+
+    async def complete_with_tools(self, *, base_url: str, api_key: str, model: str,
+                                  messages: list, temperature: float, max_tokens: int,
+                                  tools: list, extra_body: dict | None = None,
+                                  ) -> tuple[str, list[dict]]:
+        client = self._client(base_url, api_key)
+        try:
+            resp = await client.chat.completions.create(
+                model=model, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, tool_choice="auto",
+                extra_body=dict(extra_body) if extra_body else None)
+        except Exception as e:
+            _raise_sdk(e)
+        message = resp.choices[0].message
+        calls = [{"id": c.id, "name": c.function.name,
+                  "arguments": c.function.arguments or "{}"}
+                 for c in (getattr(message, "tool_calls", None) or [])]
+        return message.content or "", calls
 
     async def stream(self, *, base_url: str, api_key: str, model: str,
                      messages: list, temperature: float,
@@ -233,6 +262,24 @@ class HttpChatTransport(ChatTransport):
                   "max_tokens": max_tokens, **(extra_body or {})})
         classify_status(resp.status_code, resp.text)
         return resp.json()["choices"][0]["message"]["content"] or ""
+
+    async def complete_with_tools(self, *, base_url: str, api_key: str, model: str,
+                                  messages: list, temperature: float, max_tokens: int,
+                                  tools: list, extra_body: dict | None = None,
+                                  ) -> tuple[str, list[dict]]:
+        resp = await self._client.post(
+            f"{_strip_suffix(base_url, '/chat/completions')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+            json={"model": model, "messages": messages, "temperature": temperature,
+                  "max_tokens": max_tokens, "tools": tools, "tool_choice": "auto",
+                  **(extra_body or {})})
+        classify_status(resp.status_code, resp.text)
+        message = resp.json()["choices"][0]["message"]
+        calls = [{"id": c.get("id") or "",
+                  "name": (c.get("function") or {}).get("name") or "",
+                  "arguments": (c.get("function") or {}).get("arguments") or "{}"}
+                 for c in (message.get("tool_calls") or [])]
+        return message.get("content") or "", calls
 
     async def stream(self, *, base_url: str, api_key: str, model: str,
                      messages: list, temperature: float,

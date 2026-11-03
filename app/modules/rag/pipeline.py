@@ -21,6 +21,7 @@ import json
 import mimetypes
 import re
 import time
+from datetime import datetime
 from typing import AsyncIterator
 
 from app.config.settings import get_settings
@@ -32,6 +33,7 @@ from app.modules.document import service as document_service
 from app.modules.model import service as model_service
 from app.modules.rag import analysis, graph, retrieval, text2sql
 from app.modules.rag.model import IntentResult, RetrievedChunk, RouteResult
+from app.services import mcp_agent
 from app.services.llm_client import get_llm, get_model_llm
 from app.services.prompt_loader import render
 
@@ -96,6 +98,12 @@ async def _load_image_parts(urls: list[str]) -> list[dict]:
         parts.append({"type": "image_url",
                       "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}})
     return parts
+
+
+def _now_hint() -> str:
+    """当前时间提示：注入 system prompt，避免模型用训练期日期作答。"""
+    now = datetime.now()
+    return f"今天是 {now.strftime('%Y-%m-%d')}（星期{'一二三四五六日'[now.weekday()]}）"
 
 
 def _fmt_contexts(chunks: list[RetrievedChunk]) -> str:
@@ -233,7 +241,10 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
         return
 
     # ---- 1. QA 缓存命中：直接返回审核过的标准答案 ----
-    if use_cache:
+    # 时效性问题（今天/最新/价格…）不查缓存：缓存是历史答案，越久越错
+    if use_cache and mcp_agent.is_time_sensitive(question):
+        logger.info("qa_cache_skipped_time_sensitive", question=question[:40])
+    if use_cache and not mcp_agent.is_time_sensitive(question):
         try:
             from app.modules.qa_cache import service as qa_cache
             hit = await qa_cache.lookup(question, conv_id, assistant_msg_id)
@@ -273,10 +284,20 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
 
     # ---- 3. 不相关：通用对话直答（不进 RAG，省检索成本）----
     if not intent.related:
+        # 闲聊分流下同样可能问实时信息（今天新闻/最新版本），先联网补充再生成
+        tool_text = ""
+        if (mcp_agent.enabled() and mcp_agent.is_time_sensitive(question)
+                and not mcp_agent.is_clock_question(question)):
+            yield progress("正在查询外部资料...")
+            try:
+                tool_text = (await mcp_agent.augment(
+                    question, history, llm=llm, chunks=[])).text
+            except Exception as e:
+                logger.warning("mcp_augment_skipped", error=str(e))
         yield progress("正在为您生成回答...")
         answer = ""
         interrupted = False
-        async for token in _general_chat(question, history, llm=llm):
+        async for token in _general_chat(question, history, llm=llm, tool_text=tool_text):
             answer += token
             yield SseEvent.TOKEN, {"text": token}
             await flush_partial(answer)
@@ -334,6 +355,17 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
         yield SseEvent.ERROR, {"message": "检索暂时不可用，已按通用知识回答"}
         chunks, references = [], []
 
+    # ---- 4.5 MCP 工具补充：检索为空或问题有时效性诉求时联网搜索 ----
+    # 本地小模型端点通常不支持 function calling，跳过以免多一轮无效请求
+    tool_text = ""
+    if not skip_analysis and mcp_agent.enabled():
+        try:
+            yield progress("正在查询外部资料...")
+            augment = await mcp_agent.augment(question, history, llm=llm, chunks=chunks)
+            tool_text = augment.text
+        except Exception as e:
+            logger.warning("mcp_augment_skipped", error=str(e))
+
     if references:
         await chat.update_rag_references(assistant_msg_id, references)
         yield SseEvent.REFERENCE, {"references": references}
@@ -347,7 +379,7 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     card_filter = _CardStreamFilter()
     interrupted = False
     async for token in _generate(intent.intent, question, rewritten, chunks, history,
-                                 llm=llm):
+                                 llm=llm, tool_text=tool_text):
         answer += token
         text = card_filter.feed(token)
         if text:
@@ -576,7 +608,7 @@ def _extract_doc_images(chunks: list[RetrievedChunk], limit: int = 4) -> list[st
 
 async def _generate(intent: str, question: str, rewritten: str,
                     chunks: list[RetrievedChunk], history: str,
-                    *, llm=None) -> AsyncIterator[str]:
+                    *, llm=None, tool_text: str = "") -> AsyncIterator[str]:
     """基于参考资料流式生成。LLM 不可用 → 直接返回检索到的资料摘要兜底。
 
     若当前对话模型支持多模态（llm.supports_vision），且检索分段含文档图片，
@@ -590,8 +622,13 @@ async def _generate(intent: str, question: str, rewritten: str,
         return
     prompt = render("rag-answer-prompt", intent=intent,
                     contexts=_fmt_contexts(chunks), question=question)
-    system = f"你是{intent}领域的资深技术专家。" + (
-        f"\n\n# 历史对话\n{history}" if history else "")
+    if tool_text:
+        # 外部工具（联网搜索等）结果单独成段：与知识库资料区分来源，便于模型标注出处
+        prompt += f"\n\n# 外部工具补充资料（联网搜索等）\n{tool_text}"
+    # 注入当前日期：模型只会按训练数据猜日期，实时类问题必须给它准确基准
+    system = (f"你是{intent}领域的资深技术专家。{_now_hint()}，"
+              f"涉及日期、版本、实时信息时以此为准，不确定就说明不确定。"
+              + (f"\n\n# 历史对话\n{history}" if history else ""))
 
     # 多模态：仅当模型支持识图且分段含图片时才发送图片
     doc_image_parts: list[dict] = []
@@ -644,14 +681,19 @@ async def _vision_chat(question: str, history: str,
         yield "（图片理解服务暂时不可用，请检查「模型配置」中的图片理解模型是否在线。）"
 
 
-async def _general_chat(question: str, history: str, *, llm=None) -> AsyncIterator[str]:
+async def _general_chat(question: str, history: str, *, llm=None,
+                        tool_text: str = "") -> AsyncIterator[str]:
     """与编程技术无关的闲聊：通用 LLM 直答。LLM 不可用 → 固定话术。"""
     llm = llm or get_llm()
     if not llm.available:
         yield "您好，我是编程知识助手。当前AI服务未配置，暂时无法为您生成个性化回答。"
         return
-    system = "你是一名友好的编程技术知识助手，对与技术无关的闲聊做简短得体的回应，并引导用户咨询编程技术问题。"
+    system = ("你是一名友好的编程技术知识助手。"
+              f"{_now_hint()}，涉及日期、时间、版本等实时信息时以此为准。"
+              "对与技术无关的闲聊做简短得体的回应，并引导用户咨询编程技术问题。")
     prompt = question + (f"\n\n# 历史\n{history}" if history else "")
+    if tool_text:
+        prompt += f"\n\n# 外部工具补充资料（联网搜索等）\n{tool_text}"
     try:
         async for token in llm.stream_chat(prompt, system=system, temperature=0.7):
             yield token

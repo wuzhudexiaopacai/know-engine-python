@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -224,6 +224,43 @@ class QaCacheConfig(BaseSettings):
         return {x.strip() for x in self.reviewer_ids.split(",") if x.strip()}
 
 
+class McpServerConfig(BaseModel):
+    """单个 MCP 服务：stdio 启动本地进程，或 http 直连远程端点。
+
+    stdio 示例：{"name":"search","transport":"stdio","command":"npx",
+                "args":["-y","tavily-mcp"],"env":{"TAVILY_API_KEY":"..."}}
+    http  示例：{"name":"tavily","transport":"http",
+                "url":"https://mcp.tavily.com/mcp/?tavilyApiKey=..."}
+    """
+
+    name: str
+    transport: str = "stdio"                 # stdio / http
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class McpConfig(BaseSettings):
+    """MCP 客户端配置（MCP__ENABLED / MCP__SERVERS 等环境变量覆盖）。
+
+    servers 为 JSON 数组，例如：
+    MCP__SERVERS='[{"name":"tavily","transport":"http","url":"https://mcp.tavily.com/mcp/?tavilyApiKey=xxx"}]'
+    """
+
+    model_config = SettingsConfigDict(env_prefix="MCP__", env_file=".env", extra="ignore")
+
+    enabled: bool = False
+    servers: list[McpServerConfig] = Field(default_factory=list)
+    timeout_seconds: float = 30.0            # 单次 list/call 的总超时
+    max_rounds: int = 3                      # 工具调用循环上限，防止模型反复调用
+    max_tools: int = 20                      # 暴露给模型的工具数上限（超了截断，控制 token）
+    max_result_chars: int = 4000             # 单个工具结果注入上限，防撑爆上下文
+    cache_ttl_seconds: int = 300             # tools/list 结果缓存时长
+    max_servers: int = 6
+
+
 class Settings(BaseSettings):
     """聚合根配置，通过 get_settings() 获取单例。"""
 
@@ -241,6 +278,7 @@ class Settings(BaseSettings):
     storage: StorageConfig = StorageConfig()
     parse: ParseConfig = ParseConfig()
     qa_cache: QaCacheConfig = QaCacheConfig()
+    mcp: McpConfig = McpConfig()
 
 
 @lru_cache

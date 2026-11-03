@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from functools import partial
 from typing import AsyncIterator
 
 from tenacity import (
@@ -115,6 +116,25 @@ class LlmClient:
         return await self._breaker.call(
             self._chat_with_retry, messages, model or self.chat_model, temperature, max_tokens,
             skip_failure_on=(ModelCapabilityError,))
+
+    async def complete_with_tools(self, messages: list, tools: list, *,
+                                  model: str | None = None,
+                                  temperature: float = 0.3,
+                                  max_tokens: int = 1024) -> tuple[str, list[dict]]:
+        """带工具描述的非流式补全：返回 (文本, 工具调用列表)。
+
+        用于 MCP 工具编排：模型决定是否调用工具 → 执行 → 结果回填。
+        端点不支持 tools（如部分本地小模型）时抛 ModelCapabilityError，调用方降级。
+        """
+        if not self.available:
+            raise CircuitOpenError("LLM 未配置 API Key")
+        call = partial(
+            self._transport.complete_with_tools,
+            base_url=self._base, api_key=self._api_key,
+            model=model or self.chat_model, messages=messages,
+            temperature=temperature, max_tokens=max_tokens, tools=tools,
+            extra_body=self._completion_extra())
+        return await self._breaker.call(call, skip_failure_on=(ModelCapabilityError,))
 
     async def chat_json(self, prompt: str, *, system: str | None = None,
                        model: str | None = None) -> dict | list | None:
