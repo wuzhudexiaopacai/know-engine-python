@@ -19,7 +19,7 @@ import json
 from datetime import datetime, timedelta
 
 import numpy as np
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 
 from app.config.settings import get_settings
 from app.core.database import session_scope
@@ -27,7 +27,7 @@ from app.core.exceptions import NotFoundError, ParamError
 from app.core.logging import get_logger
 from app.models.constants import CacheStatus, DisableReason
 from app.models.entities import QaCacheEntry, QaCacheLookup
-from app.models.queries import base_filter
+from app.models.queries import base_count, base_filter
 
 logger = get_logger("app.qa_cache")
 
@@ -167,7 +167,7 @@ def _new_id() -> str:
 async def list_entries(status: str | None, page: int, size: int) -> dict:
     async with session_scope() as session:
         stmt = base_filter(QaCacheEntry)
-        cnt = select(func.count()).select_from(QaCacheEntry)
+        cnt = base_count(QaCacheEntry)
         if status:
             stmt = stmt.where(QaCacheEntry.status == status)
             cnt = cnt.where(QaCacheEntry.status == status)

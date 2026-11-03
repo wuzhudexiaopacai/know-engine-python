@@ -30,7 +30,7 @@ from app.infra.cache import get_cache
 from app.infra.file_storage import get_file_store
 from app.models.constants import DocumentStatus, MetaKey, SegmentStatus
 from app.models.entities import DocumentVersion, KnowledgeDocument, KnowledgeSegment
-from app.models.queries import base_filter, soft_delete, update_with_lock
+from app.models.queries import base_count, base_filter, soft_delete, update_with_lock
 from app.modules.document.schemas import (
     DocumentVO, DocumentVersionVO, SegmentListVO, SegmentVO,
 )
@@ -81,7 +81,7 @@ async def list_documents(page: int, size: int, status: str | None,
     """分页列表（软删过滤 + 关键字模糊 + 状态筛选）。"""
     async with session_scope() as session:
         stmt = base_filter(KnowledgeDocument)
-        count_stmt = select(func.count()).select_from(KnowledgeDocument)
+        count_stmt = base_count(KnowledgeDocument)
         cond = []
         if status:
             cond.append(KnowledgeDocument.status == status)

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.core.database import session_scope
 from app.core.exceptions import NotFoundError, ParamError
 from app.models.entities import UserInfo
-from app.models.queries import base_filter, soft_delete, update_with_lock
+from app.models.queries import base_count, base_filter, soft_delete, update_with_lock
 from app.modules.admin.schemas import UserCreateRequest, UserListVO, UserUpdateRequest, UserVO
 from app.modules.auth.password import hash_password
 
@@ -77,7 +77,7 @@ async def delete_user(user_id: int, lock_version: int) -> None:
 async def list_users(page: int, size: int, keyword: str | None) -> UserListVO:
     async with session_scope() as session:
         stmt = base_filter(UserInfo)
-        count_stmt = select(func.count()).select_from(UserInfo).where(UserInfo.deleted == 0)
+        count_stmt = base_count(UserInfo)
         if keyword:
             stmt = stmt.where(UserInfo.phone.like(f"%{keyword}%"))
             count_stmt = count_stmt.where(UserInfo.phone.like(f"%{keyword}%"))

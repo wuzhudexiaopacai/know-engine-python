@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.exceptions import ConcurrentError
@@ -15,6 +15,14 @@ from app.models.entities import AuditMixin
 def base_filter(entity_type):
     """所有 SELECT 的默认软删过滤。"""
     return select(entity_type).where(entity_type.deleted == 0)
+
+
+def base_count(entity_type):
+    """与 base_filter 配套的总量统计：分页 total 必须同样排除软删数据。
+
+    注意：COUNT 若漏掉 deleted = 0，分页会虚高——页面上会出现「共 N 条、最后一页为空」。
+    """
+    return select(func.count()).select_from(entity_type).where(entity_type.deleted == 0)
 
 
 async def update_with_lock(session, entity_type, pk_column_name: str, pk_value,
