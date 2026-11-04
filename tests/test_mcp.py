@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.config.settings import McpConfig
+from app.config.settings import McpConfig, McpServerConfig
 from app.infra import mcp_client as mc
 from app.services import mcp_agent
 
@@ -168,3 +168,47 @@ class TestAugment:
         assert mcp_agent._parse_args("not-json") == {}
         assert mcp_agent._parse_args("[1,2]") == {}
         assert mcp_agent._parse_args('{"q":"x"}') == {"q": "x"}
+
+
+class TestEnvExpansion:
+    def test_http_url_expands_process_env(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)          # 隔离仓库根目录的 .env
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+        cfg = McpConfig(servers=[McpServerConfig(
+            name="tavily", transport="http",
+            url="https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}")])
+        assert cfg.servers[0].url.endswith("tavilyApiKey=tvly-test-key")
+
+    def test_stdio_env_block_expands_env(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+        cfg = McpConfig(servers=[McpServerConfig(
+            name="search", transport="stdio", command="npx",
+            args=["-y", "tavily-mcp"],
+            env={"TAVILY_API_KEY": "${TAVILY_API_KEY}"})])
+        assert cfg.servers[0].env["TAVILY_API_KEY"] == "tvly-test-key"
+
+    def test_dotenv_takes_precedence_over_process_env(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("TAVILY_API_KEY=tvly-from-dotenv\n", encoding="utf-8")
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-process")
+        cfg = McpConfig(servers=[McpServerConfig(
+            name="tavily", transport="http",
+            url="https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}")])
+        assert cfg.servers[0].url.endswith("tavilyApiKey=tvly-from-dotenv")
+
+    def test_empty_dotenv_value_falls_back_to_process_env(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("TAVILY_API_KEY=\n", encoding="utf-8")
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-process")
+        cfg = McpConfig(servers=[McpServerConfig(
+            name="tavily", transport="http",
+            url="https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}")])
+        assert cfg.servers[0].url.endswith("tavilyApiKey=tvly-from-process")
+
+    def test_unset_var_kept_literal(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MCP_TEST_UNSET", raising=False)
+        cfg = McpConfig(servers=[McpServerConfig(
+            name="x", transport="http", url="https://example.com/${MCP_TEST_UNSET}")])
+        assert "${MCP_TEST_UNSET}" in cfg.servers[0].url

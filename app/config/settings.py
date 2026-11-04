@@ -11,13 +11,43 @@
 
 from __future__ import annotations
 
+import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _env_lookup() -> dict[str, str]:
+    """构造 ${VAR} 的解析来源：.env 优先，未配置时回落到进程环境变量。
+
+    pydantic-settings 读取 .env 只用于字段解析，不会写入 os.environ，
+    所以这里显式读一次，让配置里的 ${TAVILY_API_KEY} 在两种启动方式下都能展开。
+    """
+    values: dict[str, str] = {}
+    env_path = Path(".env")
+    if env_path.is_file():
+        try:
+            from dotenv import dotenv_values
+
+            for k, v in dotenv_values(env_path).items():
+                if v:                     # 空值视为未配置，让进程环境变量兜底
+                    values[k] = v
+        except Exception:                 # 读取失败不阻断启动
+            pass
+    for k, v in os.environ.items():
+        values.setdefault(k, v)
+    return values
+
+
+def _expand_refs(value: str, lookup: dict[str, str]) -> str:
+    return _ENV_REF.sub(lambda m: lookup.get(m.group(1) or m.group(2), m.group(0)), value)
 
 
 class AppConfig(BaseSettings):
@@ -228,9 +258,11 @@ class McpServerConfig(BaseModel):
     """单个 MCP 服务：stdio 启动本地进程，或 http 直连远程端点。
 
     stdio 示例：{"name":"search","transport":"stdio","command":"npx",
-                "args":["-y","tavily-mcp"],"env":{"TAVILY_API_KEY":"..."}}
+                "args":["-y","tavily-mcp"],"env":{"TAVILY_API_KEY":"${TAVILY_API_KEY}"}}
     http  示例：{"name":"tavily","transport":"http",
-                "url":"https://mcp.tavily.com/mcp/?tavilyApiKey=..."}
+                "url":"https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}"}
+
+    字符串字段支持 ${VAR} 引用环境变量，密钥只需放在环境变量里，不必写进配置。
     """
 
     name: str
@@ -246,7 +278,7 @@ class McpConfig(BaseSettings):
     """MCP 客户端配置（MCP__ENABLED / MCP__SERVERS 等环境变量覆盖）。
 
     servers 为 JSON 数组，例如：
-    MCP__SERVERS='[{"name":"tavily","transport":"http","url":"https://mcp.tavily.com/mcp/?tavilyApiKey=xxx"}]'
+    MCP__SERVERS='[{"name":"tavily","transport":"http","url":"https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}"}]'
     """
 
     model_config = SettingsConfigDict(env_prefix="MCP__", env_file=".env", extra="ignore")
@@ -259,6 +291,18 @@ class McpConfig(BaseSettings):
     max_result_chars: int = 4000             # 单个工具结果注入上限，防撑爆上下文
     cache_ttl_seconds: int = 300             # tools/list 结果缓存时长
     max_servers: int = 6
+
+    @model_validator(mode="after")
+    def _expand_env_refs(self):
+        """把 servers 里的 ${VAR} 展开为实际值（.env 优先，进程环境变量兜底）。"""
+        lookup = _env_lookup()
+        for srv in self.servers:
+            srv.command = _expand_refs(srv.command, lookup)
+            srv.args = [_expand_refs(a, lookup) for a in srv.args]
+            srv.env = {k: _expand_refs(v, lookup) for k, v in srv.env.items()}
+            srv.url = _expand_refs(srv.url, lookup)
+            srv.headers = {k: _expand_refs(v, lookup) for k, v in srv.headers.items()}
+        return self
 
 
 class Settings(BaseSettings):

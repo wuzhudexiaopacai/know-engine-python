@@ -138,6 +138,8 @@ services:
       LLM__API_KEY: ${LLM_API_KEY:-}
       LLM__BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       # ---- MCP 外部工具（联网搜索等；默认关闭，servers 为 JSON 数组）----
+      # servers 里的 ${TAVILY_API_KEY} 由应用启动时展开，这里把 Key 传进容器
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       MCP__ENABLED: ${MCP_ENABLED:-false}
       MCP__SERVERS: ${MCP_SERVERS:-[]}
       # ---- 中间件：容器内用服务名，端口用容器内部端口 ----
