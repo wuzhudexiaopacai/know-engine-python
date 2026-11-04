@@ -318,6 +318,7 @@ pnpm dev                             # http://localhost:5173，/api 自动代理
 
 - API 文档：<http://127.0.0.1:8009/api/docs>
 - 存活探针：<http://127.0.0.1:8009/api/health>
+- 就绪探针：<http://127.0.0.1:8009/api/health/ready>（探测 MySQL/Redis/ES/对象存储，任一依赖不可用返回 503；Redis/ES 未配置属设计内降级，计为 SKIPPED 不阻塞就绪）
 
 ### 5.4 方式三：零中间件降级运行
 
@@ -581,6 +582,7 @@ SSE 事件：
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 存活探针 |
+| GET | `/api/health/ready` | 就绪探针（依赖全部可用返回 200，否则 503） |
 | GET | `/api/files/{key}` | 对象存储文件回读（免登录只读） |
 
 ---

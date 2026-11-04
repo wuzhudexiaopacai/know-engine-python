@@ -116,6 +116,87 @@ async def health() -> R:
     return R.ok({"status": "UP", "env": settings.app.env})
 
 
+# ---------------- 就绪探针 ----------------
+async def _probe_mysql() -> dict:
+    try:
+        from sqlalchemy import text
+
+        from app.core.database import session_scope
+        async with session_scope() as session:
+            await session.execute(text("SELECT 1"))
+        return {"status": "UP"}
+    except Exception as e:
+        return {"status": "DOWN", "error": str(e)[:200]}
+
+
+async def _probe_redis() -> dict:
+    """未配置时视为可选项（SKIPPED）：进程内降级是设计能力，不应阻塞就绪。"""
+    url = settings.redis.url
+    if not url:
+        return {"status": "SKIPPED", "reason": "未配置，进程内降级"}
+    try:
+        import redis.asyncio as aioredis
+        client = aioredis.from_url(url, socket_connect_timeout=1.0, socket_timeout=1.0)
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
+        return {"status": "UP"}
+    except Exception as e:
+        return {"status": "DOWN", "error": str(e)[:200]}
+
+
+async def _probe_elasticsearch() -> dict:
+    cfg = settings.vector
+    if not cfg.es_url:
+        return {"status": "SKIPPED", "reason": "未配置，降级内存向量存储"}
+    try:
+        from elasticsearch import AsyncElasticsearch
+        kwargs = {"hosts": cfg.es_url, "request_timeout": 2.0}
+        if cfg.es_username:
+            kwargs["basic_auth"] = (cfg.es_username, cfg.es_password)
+        client = AsyncElasticsearch(**kwargs)
+        try:
+            ok = await client.ping()
+        finally:
+            await client.close()
+        return {"status": "UP" if ok else "DOWN"}
+    except Exception as e:
+        return {"status": "DOWN", "error": str(e)[:200]}
+
+
+async def _probe_storage() -> dict:
+    from starlette.concurrency import run_in_threadpool
+
+    from app.infra.file_storage import get_file_store
+    store = get_file_store()
+    if type(store).__name__ == "MinioFileStore":
+        try:
+            await run_in_threadpool(store._client.bucket_exists, store.bucket_default)
+            return {"status": "UP", "backend": "minio"}
+        except Exception as e:
+            return {"status": "DOWN", "backend": "minio", "error": str(e)[:200]}
+    return {"status": "UP", "backend": "local"}
+
+
+@app.get("/api/health/ready")
+async def health_ready():
+    """就绪探针：探测 MySQL/Redis/ES/对象存储依赖，任一必需依赖失败返回 503。
+
+    Redis/ES 未配置属于设计内降级（SKIPPED），不影响就绪判定；
+    供 K8s readinessProbe / 负载均衡健康检查使用。
+    """
+    import asyncio as _asyncio
+
+    mysql, redis_, es, storage = await _asyncio.gather(
+        _probe_mysql(), _probe_redis(), _probe_elasticsearch(), _probe_storage())
+    checks = {"mysql": mysql, "redis": redis_, "elasticsearch": es, "storage": storage}
+    ready = all(c["status"] != "DOWN" for c in checks.values())
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=200 if ready else 503,
+                        content={"success": ready, "ready": ready, "checks": checks})
+
+
 @app.get("/api/files/{key:path}")
 async def read_stored_file(key: str):
     """对象存储文件回读（免登录只读）：头像等需要长期稳定 URL 的场景。
