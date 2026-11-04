@@ -22,6 +22,7 @@ import numpy as np
 
 from app.config.settings import get_settings
 from app.core.logging import get_logger
+from app.models.constants import MetaKey
 
 logger = get_logger("app.vector")
 
@@ -184,6 +185,12 @@ _INDEX_SETTINGS = {
 }
 
 
+def _visible_to(accessible_by: str | None, identity: str) -> bool:
+    """权限可见性判定：逗号分隔身份任一命中即放行，VISITOR 为公开。"""
+    accs = {s.strip() for s in str(accessible_by or "VISITOR").split(",") if s.strip()}
+    return identity in accs or "VISITOR" in accs
+
+
 class ElasticsearchVectorStore(VectorStore):
     def __init__(self, client, index_name: str):
         self._es = client
@@ -224,10 +231,12 @@ class ElasticsearchVectorStore(VectorStore):
             return 0
         actions: list[dict] = []
         for r in records:
+            # accessible_by 逗号分隔多身份，keyword 字段按数组写入，term 才能逐一命中
+            acc = [s.strip() for s in (r.accessible_by or "").split(",") if s.strip()]
             src = {
                 "chunkId": r.chunk_id, "text": r.text, "documentId": r.document_id,
                 "docVersion": r.doc_version, "title": r.title, "order": r.order,
-                "skipEmbedding": r.skip_embedding, "accessibleBy": r.accessible_by or "VISITOR",
+                "skipEmbedding": r.skip_embedding, "accessibleBy": acc or ["VISITOR"],
                 "expireAt": r.expire_at,
             }
             if r.vector is not None:
@@ -421,6 +430,12 @@ class DatabaseVectorStore(VectorStore):
             if flt.doc_versions is not None:
                 stmt = stmt.where(KnowledgeSegment.document_version.in_(flt.doc_versions))
             rows = (await session.execute(stmt)).scalars().all()
+
+        # 降级模式同样执行权限过滤（此前缺失，ES 不可用时专属文档会对所有人泄露）
+        if flt.user_identity and flt.user_identity != "VISITOR":
+            ident = flt.user_identity
+            rows = [r for r in rows
+                    if _visible_to((r.metadata_ or {}).get(MetaKey.ACCESSIBLE_BY), ident)]
 
         hits: dict[str, SearchHit] = {}
 

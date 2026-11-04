@@ -36,9 +36,11 @@ def _resolve(token: str | None) -> CurrentUser:
                            identity_for_retrieval="VISITOR")
     data = auth.verify_token(token)
     identity = data.get("identity", "user")
-    # 管理员可检索其工号可见 + 全员可见；用户同理透传
+    # 管理员透传工号、用户透传手机号，命中 accessibleBy 的专属文档才可检索到；
+    # 旧令牌无 rid 字段，安全退回 VISITOR（仅公开文档）
     return CurrentUser(sub=str(data["sub"]), identity=identity,
-                       name=data.get("name", ""), identity_for_retrieval="VISITOR")
+                       name=data.get("name", ""),
+                       identity_for_retrieval=str(data.get("rid") or "VISITOR"))
 
 
 async def get_current_user(

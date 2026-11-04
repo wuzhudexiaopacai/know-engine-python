@@ -111,9 +111,10 @@ def _serializer() -> URLSafeTimedSerializer:
 # ------------------------------------------------------------------
 # 令牌
 # ------------------------------------------------------------------
-def issue_token(subject_id: str, identity: Identity, name: str) -> str:
-    """签发令牌：载荷 = {sub, identity, name}。"""
-    return _serializer().dumps({"sub": subject_id, "identity": identity, "name": name})
+def issue_token(subject_id: str, identity: Identity, name: str, *, rid: str | None = None) -> str:
+    """签发令牌：载荷 = {sub, identity, name, rid}；rid 为检索权限身份（工号/手机号）。"""
+    return _serializer().dumps({"sub": subject_id, "identity": identity, "name": name,
+                                "rid": rid or "VISITOR"})
 
 
 def verify_token(token: str) -> dict:
@@ -168,7 +169,8 @@ async def login_user(phone: str, password: str, *, captcha_id: str, captcha_code
     if user.status != UserStatus.ACTIVE:
         raise LoginError("账号已停用，请联系管理员")
     await get_cache().delete(_fail_key("user", phone))
-    token = issue_token(str(user.id), "user", user.nickname or user.name or phone)
+    token = issue_token(str(user.id), "user", user.nickname or user.name or phone,
+                        rid=phone)
     logger.info("user_login", user_id=user.id)
     return {"token": token, "identity": "user",
             "user": {"id": str(user.id), "name": user.name, "nickname": user.nickname,
@@ -187,7 +189,7 @@ async def login_admin(emp_id: str, password: str, *, captcha_id: str, captcha_co
     if admin.status != AdminStatus.ON_JOB:
         raise LoginError("账号已停用，请联系管理员")
     await get_cache().delete(_fail_key("admin", emp_id))
-    token = issue_token(str(admin.id), "admin", admin.name or emp_id)
+    token = issue_token(str(admin.id), "admin", admin.name or emp_id, rid=emp_id)
     logger.info("admin_login", emp_id=emp_id)
     return {"token": token, "identity": "admin",
             "user": {"id": str(admin.id), "emp_id": admin.emp_id,
