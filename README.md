@@ -347,6 +347,32 @@ python -c "import app.main as m; print('routes:', len(m.app.routes))"
 python -m pytest tests -q                                     # 130 个单测，无需中间件
 ```
 
+### 5.7 多实例部署
+
+API 无进程内会话态依赖的关键能力已外置，可水平扩容多个实例后用 Nginx 反向代理：
+
+```bash
+# 每个实例都指向同一套中间件；Redis 为多实例强依赖
+REDIS__URL=redis://redis:6379/0
+SNOWFLAKE__WORKER_ID=1          # 每个实例必须不同（或留空按主机名自动派生）
+STORAGE__UPLOAD_ROOT=/mnt/shared/upload_sessions   # 共享卷 / NFS，否则分片上传会断
+```
+
+| 能力 | 多实例处理方式 |
+| --- | --- |
+| 雪花 ID | `SNOWFLAKE__WORKER_ID` 每个实例唯一；未配置时按「主机名:端口」自动派生 |
+| 定时补偿任务 | 各实例都启动调度器，任务执行前用 Redis 锁抢占，同一时刻只有一个实例执行 |
+| 分片上传 | 会话目录通过 `STORAGE__UPLOAD_ROOT` 指向共享存储 |
+| SSE 续流 / 停止生成 | Nginx `ip_hash` 会话粘性，保证同一客户端落到同一实例；实例故障时可刷新重试 |
+| 熔断锁 / 验证码 / 缓存 | Redis 共享（未配置 Redis 时自动降级为进程内，仅适合单机） |
+
+代理配置示例见 [`deploy/nginx.conf`](deploy/nginx.conf)：除会话粘性外，还关闭了响应缓冲与 gzip，
+否则 SSE 的 token 会被攒批下发、前端看起来"卡住后才一次性出现"。
+
+多主机部署时共享会话目录需使用 NFS（或改用支持多实例的对象存储方案）；同机多副本可直接复用
+`docker-compose.prod.yml` 中的 `upload-data` 命名卷，并去掉 `container_name` 后用
+`--scale api=N` 启动。
+
 ---
 
 ## 6. 配置说明
