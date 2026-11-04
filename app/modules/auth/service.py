@@ -133,16 +133,41 @@ def verify_token(token: str) -> dict:
 # ------------------------------------------------------------------
 # 登录
 # ------------------------------------------------------------------
+_LOGIN_FAIL_MAX = 5          # 窗口内允许的最大失败次数
+_LOGIN_FAIL_WINDOW = 600.0   # 失败计数窗口（秒）
+
+
+def _fail_key(identity: str, account: str) -> str:
+    return f"auth:fail:{identity}:{account}"
+
+
+async def _check_login_throttle(identity: str, account: str) -> None:
+    """失败次数超限直接拒绝：防口令爆破（验证码之上再加一道）。"""
+    count = await get_cache().get_raw(_fail_key(identity, account))
+    if int(count or 0) >= _LOGIN_FAIL_MAX:
+        raise LoginError("登录失败次数过多，请 10 分钟后再试")
+
+
+async def _record_login_failure(identity: str, account: str) -> None:
+    count = await get_cache().incr_raw(_fail_key(identity, account), _LOGIN_FAIL_WINDOW)
+    logger.warning("login_failed", identity=identity, account=account, count=count)
+    if count >= _LOGIN_FAIL_MAX:
+        raise LoginError("登录失败次数过多，请 10 分钟后再试")
+
+
 async def login_user(phone: str, password: str, *, captcha_id: str, captcha_code: str) -> dict:
     await verify_captcha(captcha_id, captcha_code)
+    await _check_login_throttle("user", phone)
     async with session_scope() as session:
         user = (await session.execute(
             base_filter(UserInfo).where(UserInfo.phone == phone))).scalar_one_or_none()
     if user is None or not verify_password(password, user.password):
+        await _record_login_failure("user", phone)
         # 统一话术，避免账号枚举
         raise LoginError("手机号或密码错误")
     if user.status != UserStatus.ACTIVE:
         raise LoginError("账号已停用，请联系管理员")
+    await get_cache().delete(_fail_key("user", phone))
     token = issue_token(str(user.id), "user", user.nickname or user.name or phone)
     logger.info("user_login", user_id=user.id)
     return {"token": token, "identity": "user",
@@ -152,13 +177,16 @@ async def login_user(phone: str, password: str, *, captcha_id: str, captcha_code
 
 async def login_admin(emp_id: str, password: str, *, captcha_id: str, captcha_code: str) -> dict:
     await verify_captcha(captcha_id, captcha_code)
+    await _check_login_throttle("admin", emp_id)
     async with session_scope() as session:
         admin = (await session.execute(
             base_filter(AdminInfo).where(AdminInfo.emp_id == emp_id))).scalar_one_or_none()
     if admin is None or not admin.password or not verify_password(password, admin.password):
+        await _record_login_failure("admin", emp_id)
         raise LoginError("工号或密码错误")
     if admin.status != AdminStatus.ON_JOB:
         raise LoginError("账号已停用，请联系管理员")
+    await get_cache().delete(_fail_key("admin", emp_id))
     token = issue_token(str(admin.id), "admin", admin.name or emp_id)
     logger.info("admin_login", emp_id=emp_id)
     return {"token": token, "identity": "admin",

@@ -117,6 +117,24 @@ class CacheClient:
             except Exception as e:
                 logger.warning("redis_del_failed", key=key, error=str(e))
 
+    async def incr_raw(self, key: str, ttl: float) -> int:
+        """原子自增并保底过期时间（限流计数用）；Redis 缺失时退化为 L1 本地计数。"""
+        if self._redis is not None:
+            try:
+                async with self._redis.pipeline(transaction=True) as pipe:
+                    pipe.incr(key)
+                    pipe.expire(key, int(ttl))
+                    value, _ = await pipe.execute()
+                await self.l1.set(key, int(value), ttl)
+                return int(value)
+            except Exception as e:
+                logger.warning("redis_incr_failed", key=key, error=str(e), fallback="l1_local")
+        # 无 Redis 的单机部署：进程内计数（多实例场景必须配置 Redis）
+        val = await self.l1.get(key)
+        current = int(val) + 1 if val is not _MISS else 1
+        await self.l1.set(key, current, ttl)
+        return current
+
     # ---------------- 回源模式 ----------------
     async def get(self, key: str, loader=None, ttl: float | None = None) -> Any:
         """带-loader 的缓存读取：miss 时回源，空结果写负缓存防击穿。"""
