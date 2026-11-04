@@ -153,6 +153,8 @@ services:
       STORAGE__ACCESS_KEY: minioadmin
       STORAGE__SECRET_KEY: minioadmin
       STORAGE__SECURE: "false"
+      # 分片上传会话目录：多实例共用同一卷；多主机部署请改为 NFS/共享存储挂载点
+      STORAGE__UPLOAD_ROOT: /app/data/upload_sessions
     ports:
       - "8009:8009"
     # 本地模型（Ollama/vLLM）跑在宿主机时，容器内用 host.docker.internal 访问；
@@ -160,7 +162,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - api-data:/app/data          # 分片上传会话等本地态；对象文件在 MinIO
+      - api-data:/app/data                  # 本地降级文件目录；对象文件仍在 MinIO
+      - upload-data:/app/data/upload_sessions   # 分片上传会话（多实例必须共享）
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8009/api/health').read()"]
       interval: 20s
@@ -175,3 +178,4 @@ volumes:
   neo4j-data:
   minio-data:
   api-data:
+  upload-data:

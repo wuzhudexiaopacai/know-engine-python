@@ -247,6 +247,9 @@ class StorageConfig(BaseSettings):
     secure: bool = False                       # compose 环境走 http
     public_base_url: str = "http://localhost:9000"  # 前端直读预签名 URL 前缀
     root: str = str(BASE_DIR / "data" / "files")     # 降级本地目录
+    # 分片上传会话目录：多实例部署时必须指向各实例共享的目录（共享卷/NFS），
+    # 留空则沿用 root/upload_sessions（单机默认行为）
+    upload_root: str = ""
     # 大文件分片上传参数
     max_upload_bytes: int = 200 * 1024 * 1024   # 单文件上限 200MB
     chunk_size: int = 5 * 1024 * 1024            # 推荐分片大小 5MB

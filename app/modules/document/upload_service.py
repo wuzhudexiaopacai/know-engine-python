@@ -44,7 +44,10 @@ from app.modules.document.schemas import ChunkFinalizeRequest, ChunkInitRequest
 
 logger = get_logger("app.upload")
 
-_SESSION_ROOT = Path(get_settings().storage.root) / "upload_sessions"
+_storage_cfg = get_settings().storage
+# 多实例部署时上传请求可能落到任意实例，会话目录必须共享；
+# STORAGE__UPLOAD_ROOT 未配置时沿用本地默认目录（单机语义不变）
+_SESSION_ROOT = Path(_storage_cfg.upload_root or Path(_storage_cfg.root) / "upload_sessions")
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 _DONE_PREFIX = "ke:upload:done"
 _UNSUPPORTED_TYPES = {"unknown", "doc_legacy"}
