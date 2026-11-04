@@ -255,6 +255,22 @@ class EventBus:
                 break
         return handled
 
+    async def stats(self) -> dict | None:
+        """Stream 积压指标（长度/pending/消费者数）；进程内模式或异常时返回 None。"""
+        client = self._get_redis()
+        if client is None or not self._stream_ready:
+            return None
+        try:
+            length = await client.xlen(_STREAM_KEY)
+            groups = await client.xinfo_groups(_STREAM_KEY)
+            return {"stream": _STREAM_KEY,
+                    "length": int(length),
+                    "pending": sum(int(g.get("pending", 0)) for g in groups),
+                    "consumers": sum(int(g.get("consumers", 0)) for g in groups)}
+        except Exception as e:
+            logger.warning("event_bus_stats_failed", error=str(e))
+            return None
+
     async def _delivery_count(self, msg_id: str) -> int:
         try:
             rows = await self._redis.xpending_range(

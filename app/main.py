@@ -192,9 +192,13 @@ async def health_ready():
         _probe_mysql(), _probe_redis(), _probe_elasticsearch(), _probe_storage())
     checks = {"mysql": mysql, "redis": redis_, "elasticsearch": es, "storage": storage}
     ready = all(c["status"] != "DOWN" for c in checks.values())
+    # 事件队列积压仅作信息展示（积压偏高是运行时信号，不应摘除实例）
+    from app.infra.event_bus import get_event_bus
+    events = await get_event_bus().stats()
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=200 if ready else 503,
-                        content={"success": ready, "ready": ready, "checks": checks})
+                        content={"success": ready, "ready": ready, "checks": checks,
+                                 "events": events})
 
 
 @app.get("/api/files/{key:path}")

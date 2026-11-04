@@ -131,6 +131,8 @@ class EventConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EVENT__", env_file=".env", extra="ignore")
 
     stream_enabled: bool = Field(default=True, description="Redis 可用时是否使用 Stream 作为事件队列")
+    backlog_warn: int = Field(default=2000, description="Stream 积压条数告警阈值（调度器每分钟巡检）")
+    pending_warn: int = Field(default=100, description="未 ACK 消息数告警阈值（持续偏高说明消费异常）")
 
 
 class LlmConfig(BaseSettings):

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 
+from app.config.settings import get_settings
 from app.core.database import session_scope
 from app.core.exceptions import ConcurrentError
 from app.core.logging import get_logger
@@ -46,6 +47,19 @@ _EVENT_BY_FAILED_STAGE = {
         "split": DocumentConverted,
         "embedding": DocumentChunked,
 }
+
+
+async def monitor_event_backlog() -> None:
+    """事件队列积压巡检：超阈值打告警日志（由日志采集/外部告警订阅该事件名）。"""
+    from app.infra.event_bus import get_event_bus
+
+    stats = await get_event_bus().stats()
+    if stats is None:
+        return
+    cfg = get_settings().event
+    if stats["length"] >= cfg.backlog_warn or stats["pending"] >= cfg.pending_warn:
+        logger.warning("event_backlog_high", **stats,
+                       backlog_warn=cfg.backlog_warn, pending_warn=cfg.pending_warn)
 
 
 async def compensate_documents(stall_minutes: int = 5) -> int:
@@ -179,4 +193,7 @@ def build_scheduler():
     scheduler.add_job(_single_flight("maintain_qa_cache", 30 * 60_000)(maintain_qa_cache),
                       "interval", minutes=30,
                       id="maintain_qa_cache", max_instances=1, coalesce=True)
+    scheduler.add_job(_single_flight("monitor_event_backlog", 60_000)(monitor_event_backlog),
+                      "interval", minutes=1,
+                      id="monitor_event_backlog", max_instances=1, coalesce=True)
     return scheduler
