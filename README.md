@@ -371,9 +371,19 @@ STORAGE__UPLOAD_ROOT=/mnt/shared/upload_sessions   # 共享卷 / NFS，否则分
 代理配置示例见 [`deploy/nginx.conf`](deploy/nginx.conf)：除会话粘性外，还关闭了响应缓冲与 gzip，
 否则 SSE 的 token 会被攒批下发、前端看起来"卡住后才一次性出现"。
 
-多主机部署时共享会话目录需使用 NFS（或改用支持多实例的对象存储方案）；同机多副本可直接复用
-`docker-compose.prod.yml` 中的 `upload-data` 命名卷，并去掉 `container_name` 后用
-`--scale api=N` 启动。
+多主机部署时共享会话目录需使用 NFS（或改用支持多实例的对象存储方案）。
+
+**同机多副本一键样例**（已实测双副本 + nginx 入口全链路可用）：
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.multi.yml up -d --scale api=3
+# 入口：http://localhost:8090 （nginx 经 Docker DNS 轮询到全部副本）
+# 扩缩容后重启 nginx 以重新解析副本： docker restart ke-nginx
+```
+
+叠加文件 [`docker-compose.multi.yml`](docker-compose.multi.yml) 会用 `!reset` 清除单实例的
+`container_name` 与端口映射，并挂载 [`deploy/nginx.compose.conf`](deploy/nginx.compose.conf)
+（上游为服务名 `api`，无需手写实例 IP）。
 
 ---
 
