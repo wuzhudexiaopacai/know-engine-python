@@ -29,3 +29,5 @@ web/.env.local
 .trae/
 .DS_Store
 Thumbs.db
+
+backups/

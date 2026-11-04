@@ -385,6 +385,17 @@ docker compose -f docker-compose.prod.yml -f docker-compose.multi.yml up -d --sc
 `container_name` 与端口映射，并挂载 [`deploy/nginx.compose.conf`](deploy/nginx.compose.conf)
 （上游为服务名 `api`，无需手写实例 IP）。
 
+### 5.8 备份与恢复
+
+```powershell
+.\scripts\backup.ps1 -IncludeRedis   # MySQL 全量 + MinIO 数据卷（+可选 Redis RDB），输出到 .\backups\
+```
+
+- **备份范围**：MySQL（业务全量，分段向量也在库内）+ MinIO（文档原件）。ES 向量索引与 Neo4j 图谱可由 MySQL 重建（重新激活文档或等补偿任务），不纳入备份；上传会话目录是临时数据，无需备份。
+- **恢复 MySQL**：先建空库，再 `docker cp backups\mysql-xxx.sql ke-mysql:/tmp/ && docker exec ke-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" know_engine < /tmp/mysql-xxx.sql'`。
+- **恢复 MinIO**：停 api 后 `docker run --rm -v know-engine-python_minio-data:/data -v "<backups 绝对路径>:/backup" alpine sh -c 'rm -rf /data/* && tar xzf /backup/minio-data-xxx.tar.gz -C /data'`，再启动 api。
+- **重建 ES**：恢复后调用文档「重新激活」或等待补偿任务将分段重新写入索引。
+
 ---
 
 ## 6. 配置说明
