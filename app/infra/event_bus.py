@@ -60,6 +60,7 @@ class EventBus:
         self._claimer: asyncio.Task | None = None
         self._stopping = False
         self._redis = None
+        self._stream_ready = False   # 消费组就绪后才入队，避免无消费者的场景丢事件
         self._consumer_name = f"{socket.gethostname()}-{os.getpid()}"
 
     # ---------------- 注册 ----------------
@@ -71,7 +72,7 @@ class EventBus:
     # ---------------- 发布 ----------------
     def publish(self, event: DomainEvent) -> None:
         """发布事件：Redis 可用时入 Stream，否则进程内分发（均为非阻塞）。"""
-        client = self._get_redis()
+        client = self._get_redis() if self._stream_ready else None
         if client is not None:
             task = asyncio.create_task(self._xadd(event),
                                        name=f"evt-{type(event).__name__}")
@@ -149,6 +150,7 @@ class EventBus:
                 logger.warning("event_group_create_failed", error=str(e), fallback="in-process")
                 self._redis = None
                 return
+        self._stream_ready = True
         self._consumer = asyncio.create_task(self._consume_loop(), name="evt-consumer")
         self._claimer = asyncio.create_task(self._claim_loop(), name="evt-claimer")
         logger.info("event_bus_stream", stream=_STREAM_KEY, group=_GROUP,
@@ -157,6 +159,7 @@ class EventBus:
     async def stop(self) -> None:
         """应用关闭：停止消费与巡检，未完成的消息留给其他实例/重启后重投。"""
         self._stopping = True
+        self._stream_ready = False
         for task in (self._consumer, self._claimer):
             if task is not None:
                 task.cancel()
