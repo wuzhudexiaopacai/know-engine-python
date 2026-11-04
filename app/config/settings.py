@@ -109,6 +109,18 @@ class SnowflakeConfig(BaseSettings):
     worker_id: int = Field(default=-1, description="-1 表示按主机名哈希自动派生；手动指定范围 0~1023")
 
 
+class SchedulerConfig(BaseSettings):
+    """定时补偿任务配置（env 前缀 SCHEDULER__）。
+
+    多实例部署时各实例都可启动调度器，具体任务由 Redis 分布式锁抢占执行；
+    如需彻底关闭某实例的调度能力（如单独部署 worker），置 enabled=false。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SCHEDULER__", env_file=".env", extra="ignore")
+
+    enabled: bool = Field(default=True, description="是否启动定时补偿调度器")
+
+
 class LlmConfig(BaseSettings):
     """LLM / Embedding 主模型配置（OpenAI 兼容协议，默认通义 DashScope）。"""
 
@@ -326,6 +338,7 @@ class Settings(BaseSettings):
     db: DatabaseConfig = DatabaseConfig()
     redis: RedisConfig = RedisConfig()
     snowflake: SnowflakeConfig = SnowflakeConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
     llm: LlmConfig = LlmConfig()
     speech: SpeechConfig = SpeechConfig()
     image: ImageConfig = ImageConfig()

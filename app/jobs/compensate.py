@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import functools
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 
 from app.core.database import session_scope
+from app.core.exceptions import ConcurrentError
 from app.core.logging import get_logger
 from app.models.constants import CacheStatus, DisableReason, DocumentStatus
 from app.models.entities import DocumentVersion, KnowledgeDocument, QaCacheEntry
@@ -142,16 +144,39 @@ async def maintain_qa_cache() -> None:
 # ------------------------------------------------------------------
 # 调度器装配
 # ------------------------------------------------------------------
+def _single_flight(job_name: str, lease_ms: int):
+    """跨实例单活包装：同一时刻只允许一个实例执行该任务。
+
+    Redis 可用时通过分布式锁抢占；拿不到锁说明别的实例正在跑，直接跳过。
+    Redis 未配置时退化为进程内锁，各实例都会执行（单机语义不变）。
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def runner(*args, **kwargs):
+            from app.infra.lock import get_lock
+            try:
+                async with get_lock().hold("scheduler", job_name, wait_time=0,
+                                           lease_ms=lease_ms):
+                    await func(*args, **kwargs)
+            except ConcurrentError:
+                logger.debug("scheduler_job_skipped", job=job_name)
+        return runner
+    return decorator
+
+
 def build_scheduler():
     """创建并配置 AsyncIOScheduler（由 main lifespan 启动/关闭）。"""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
-    scheduler.add_job(compensate_documents, "interval", minutes=2,
+    scheduler.add_job(_single_flight("compensate_documents", 5 * 60_000)(compensate_documents),
+                      "interval", minutes=2,
                       id="compensate_documents", max_instances=1, coalesce=True,
                       misfire_grace_time=60)
-    scheduler.add_job(sweep_upload_sessions, "interval", hours=6,
+    scheduler.add_job(_single_flight("sweep_upload_sessions", 30 * 60_000)(sweep_upload_sessions),
+                      "interval", hours=6,
                       id="sweep_upload_sessions", max_instances=1, coalesce=True)
-    scheduler.add_job(maintain_qa_cache, "interval", minutes=30,
+    scheduler.add_job(_single_flight("maintain_qa_cache", 30 * 60_000)(maintain_qa_cache),
+                      "interval", minutes=30,
                       id="maintain_qa_cache", max_instances=1, coalesce=True)
     return scheduler

@@ -49,18 +49,20 @@ async def lifespan(app: FastAPI):
     # 文档流水线监听器（事件驱动：上传→转换→切片→向量化）
     document_pipeline.register_listeners()
 
-    # 定时补偿任务
-    scheduler = compensate.build_scheduler()
-    scheduler.start()
-    logger.info("scheduler_started")
+    # 定时补偿任务（多实例下由分布式锁保证单活，可用 SCHEDULER__ENABLED 关闭）
+    scheduler = compensate.build_scheduler() if settings.scheduler.enabled else None
+    if scheduler is not None:
+        scheduler.start()
+        logger.info("scheduler_started")
 
     yield
 
     # 优雅关闭
-    try:
-        scheduler.shutdown(wait=False)
-    except Exception:  # pragma: no cover
-        pass
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:  # pragma: no cover
+            pass
     from app.services.embedding import close_embedding
     from app.services.image import close_image
     from app.services.llm_client import close_llm
