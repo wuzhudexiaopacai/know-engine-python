@@ -48,6 +48,9 @@ async def lifespan(app: FastAPI):
 
     # 文档流水线监听器（事件驱动：上传→转换→切片→向量化）
     document_pipeline.register_listeners()
+    # 事件总线：Redis 可用时走 Stream 消费组（多实例共享队列），否则进程内分发
+    from app.infra.event_bus import get_event_bus
+    await get_event_bus().start()
 
     # 定时补偿任务（多实例下由分布式锁保证单活，可用 SCHEDULER__ENABLED 关闭）
     scheduler = compensate.build_scheduler() if settings.scheduler.enabled else None
@@ -57,12 +60,17 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 优雅关闭
+    # 优雅关闭：先停调度器（不再产生新事件），再停事件消费
     if scheduler is not None:
         try:
             scheduler.shutdown(wait=False)
         except Exception:  # pragma: no cover
             pass
+    try:
+        from app.infra.event_bus import get_event_bus
+        await get_event_bus().stop()
+    except Exception:  # pragma: no cover
+        pass
     from app.services.embedding import close_embedding
     from app.services.image import close_image
     from app.services.llm_client import close_llm

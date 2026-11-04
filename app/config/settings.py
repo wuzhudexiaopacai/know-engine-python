@@ -121,6 +121,18 @@ class SchedulerConfig(BaseSettings):
     enabled: bool = Field(default=True, description="是否启动定时补偿调度器")
 
 
+class EventConfig(BaseSettings):
+    """领域事件总线配置（env 前缀 EVENT__）。
+
+    Redis 可用时事件写入 Stream（消费组保证一条事件只被一个实例处理，
+    失败未 ACK 的消息由 XAUTOCLAIM 超时重投）；未配置 Redis 或关闭开关时退回进程内分发。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="EVENT__", env_file=".env", extra="ignore")
+
+    stream_enabled: bool = Field(default=True, description="Redis 可用时是否使用 Stream 作为事件队列")
+
+
 class LlmConfig(BaseSettings):
     """LLM / Embedding 主模型配置（OpenAI 兼容协议，默认通义 DashScope）。"""
 
@@ -342,6 +354,7 @@ class Settings(BaseSettings):
     redis: RedisConfig = RedisConfig()
     snowflake: SnowflakeConfig = SnowflakeConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
+    event: EventConfig = EventConfig()
     llm: LlmConfig = LlmConfig()
     speech: SpeechConfig = SpeechConfig()
     image: ImageConfig = ImageConfig()
