@@ -167,7 +167,7 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
     display_question = question + "".join(f"\n\n![]({u})" for u in pics)
     conv_id, is_new = await chat.ensure_conversation(user_id, conversation_id, question)
     stop_event = stop_signal.register(conv_id)
-    hub.begin(conv_id)
+    await hub.begin(conv_id)
     try:
         yield SseEvent.CONVERSATION, {"conversation_id": conv_id}
         async for item in _stream_chat(
@@ -176,10 +176,10 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
                 llm=llm, model_name=model_name, skip_analysis=skip_analysis,
                 display_question=display_question, image_parts=image_parts,
                 is_new=is_new):
-            hub.publish(conv_id, *item)
+            await hub.publish(conv_id, *item)
             yield item
     finally:
-        hub.finish(conv_id)
+        await hub.finish(conv_id)
         stop_signal.unregister(conv_id)
 
 

@@ -363,7 +363,7 @@ STORAGE__UPLOAD_ROOT=/mnt/shared/upload_sessions   # 共享卷 / NFS，否则分
 | 雪花 ID | `SNOWFLAKE__WORKER_ID` 每个实例唯一；未配置时按「主机名:端口」自动派生 |
 | 定时补偿任务 | 各实例都启动调度器，任务执行前用 Redis 锁抢占，同一时刻只有一个实例执行 |
 | 分片上传 | 会话目录通过 `STORAGE__UPLOAD_ROOT` 指向共享存储 |
-| SSE 续流 / 停止生成 | Nginx `ip_hash` 会话粘性，保证同一客户端落到同一实例；实例故障时可刷新重试 |
+| SSE 续流 / 停止生成 | 事件缓冲与停止信号写入 Redis，任意实例都能续流和中断；Nginx 会话粘性仅用于减少重连抖动 |
 | 熔断锁 / 验证码 / 缓存 | Redis 共享（未配置 Redis 时自动降级为进程内，仅适合单机） |
 
 代理配置示例见 [`deploy/nginx.conf`](deploy/nginx.conf)：除会话粘性外，还关闭了响应缓冲与 gzip，
@@ -671,15 +671,15 @@ python -m pytest tests -q
 
 **已知限制**
 
-- 当前为单体部署模型，未做多副本共享会话缓冲（`chat_stream` 的事件缓存为进程内）。
-- 队列与事件总线为进程内实现，未接入 Kafka / RabbitMQ 等外部消息中间件。
+- 事件总线为进程内实现，任务不持久化，实例崩溃时依赖定时补偿兜底（可接受但非精确一次）。
+- 未接入 Kafka / RabbitMQ 等外部消息中间件；多实例的并发控制与状态共享依赖 Redis。
 - 权限模型为「用户 / 管理员」两级，未实现细粒度文档级 ACL。
 - 未提供官方 Helm / K8s 部署清单。
 - 前端暂无自动化 E2E 测试。
 
 **路线图**
 
-- [ ] 会话缓冲迁移到 Redis Stream，支持多副本横向扩容
+- [ ] 事件总线迁移到 Redis Stream / MQ，支持任务持久化与失败重投
 - [ ] 文档级权限（部门 / 角色可见性）
 - [ ] 检索评估集与离线指标（Recall@K、MRR）
 - [ ] 更完整的 OpenAPI 示例与 SDK

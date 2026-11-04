@@ -118,7 +118,7 @@ async def attach_stream(conversation_id: str = Query(...),
 
     async def encode():
         from app.infra import chat_stream as hub
-        if not hub.is_active(conversation_id):
+        if not await hub.is_active(conversation_id):
             yield _sse("idle", {"conversation_id": conversation_id})
             return
         async for event, data in hub.follow(conversation_id):
