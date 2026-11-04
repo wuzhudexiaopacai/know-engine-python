@@ -276,7 +276,7 @@ async def interrupt(body: InterruptRequest,
     """
     await chat.verify_conversation_access(body.conversation_id, user.owner_key,
                                           is_admin=user.identity == "admin")
-    found = stop_signal.request_stop(body.conversation_id)
+    found = await stop_signal.request_stop(body.conversation_id)
     logger.info("chat_interrupt", user_id=user.sub, conv=body.conversation_id, found=found)
     return R.ok({"interrupted": found})
 
@@ -317,7 +317,8 @@ def _image_stop_key(owner_key: str, request_id: str) -> str:
 async def cancel_image(body: ImageCancelRequest,
                        user: CurrentUser = Depends(get_current_user)) -> R:
     """中断进行中的文生图：轮询边界退出，图片不落库（可改完提示词重新生成）。"""
-    cancelled = stop_signal.request_stop(_image_stop_key(user.owner_key, body.request_id))
+    cancelled = await stop_signal.request_stop(
+        _image_stop_key(user.owner_key, body.request_id))
     logger.info("image_cancel", user_id=user.sub, found=cancelled)
     return R.ok({"cancelled": cancelled})
 
