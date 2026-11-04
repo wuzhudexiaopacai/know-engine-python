@@ -42,7 +42,7 @@
 - **图片理解**：解析时把文档内图片交给视觉模型生成描述，让图片内容进入可检索文本；控制并发、单图大小与超时，失败降级为位置文案。
 - **多策略切片**：Markdown 父子分段、Excel 双模式、固定长度、正则、分隔符、智能切片；支持按新配置对历史版本重新切片。
 - **版本治理**：单文档多版本并存、生效版本热切换、版本删除、失败重试、重切片；切换使用乐观锁 `lock_version`。
-- **事件驱动流水线**：转换 → 切片 → 向量化 由进程内事件总线串联，`APScheduler` 定时扫描停滞任务做补偿。
+- **事件驱动流水线**：转换 → 切片 → 向量化 由事件总线串联（Redis Stream 消费组，Redis 不可用时降级进程内），`APScheduler` 定时扫描停滞任务做补偿。
 
 ### 检索与生成
 
@@ -214,7 +214,7 @@ know-engine-python/
 │   ├── infra/
 │   │   ├── cache.py                # L1 进程内 + L2 Redis 缓存
 │   │   ├── circuit_breaker.py      # 三态熔断器
-│   │   ├── event_bus.py            # 进程内事件总线
+│   │   ├── event_bus.py            # 事件总线（Redis Stream / 进程内降级）
 │   │   ├── file_storage.py         # MinIO / 本地磁盘统一抽象
 │   │   ├── lock.py                 # 分布式锁（Redis / 进程内）
 │   │   ├── mcp_client.py           # MCP 客户端（stdio / http）
@@ -363,6 +363,7 @@ STORAGE__UPLOAD_ROOT=/mnt/shared/upload_sessions   # 共享卷 / NFS，否则分
 | 雪花 ID | `SNOWFLAKE__WORKER_ID` 每个实例唯一；未配置时按「主机名:端口」自动派生 |
 | 定时补偿任务 | 各实例都启动调度器，任务执行前用 Redis 锁抢占，同一时刻只有一个实例执行 |
 | 分片上传 | 会话目录通过 `STORAGE__UPLOAD_ROOT` 指向共享存储 |
+| 文档处理事件 | 事件写入 Redis Stream，消费组内一条事件只被一个实例处理；未 ACK 自动重投 |
 | SSE 续流 / 停止生成 | 事件缓冲与停止信号写入 Redis，任意实例都能续流和中断；Nginx 会话粘性仅用于减少重连抖动 |
 | 熔断锁 / 验证码 / 缓存 | Redis 共享（未配置 Redis 时自动降级为进程内，仅适合单机） |
 
@@ -613,7 +614,7 @@ python -m pytest tests -q
 | 依赖 | 缺失 / 故障时行为 |
 | --- | --- |
 | MySQL | dev 自动切换 SQLite（`DB__FALLBACK_SQLITE=true`），生产建议关闭 |
-| Redis | L2 缓存与分布式锁降级为进程内实现 |
+| Redis | L2 缓存、分布式锁、事件队列、SSE 续流缓冲降级为进程内实现（仅适合单机） |
 | Elasticsearch | 向量存 MySQL + numpy 余弦；全文降级 LIKE |
 | Neo4j | 图谱路由提示改走知识库检索 |
 | MinIO | 本地磁盘目录 `app/data/files`，接口抽象不变 |
@@ -671,15 +672,15 @@ python -m pytest tests -q
 
 **已知限制**
 
-- 事件总线为进程内实现，任务不持久化，实例崩溃时依赖定时补偿兜底（可接受但非精确一次）。
-- 未接入 Kafka / RabbitMQ 等外部消息中间件；多实例的并发控制与状态共享依赖 Redis。
+- 事件投递为「至少一次」语义：重复执行由各阶段的状态门与分布式锁保证幂等；同一消息重投 5 次仍失败会丢弃并交由定时补偿兜底。
+- 消息队列采用 Redis Stream，未引入 Kafka / RabbitMQ 等独立中间件；多实例的并发控制与状态共享均依赖 Redis。
 - 权限模型为「用户 / 管理员」两级，未实现细粒度文档级 ACL。
 - 未提供官方 Helm / K8s 部署清单。
 - 前端暂无自动化 E2E 测试。
 
 **路线图**
 
-- [ ] 事件总线迁移到 Redis Stream / MQ，支持任务持久化与失败重投
+- [x] 事件总线迁移到 Redis Stream，支持消费组、失败重投与多实例共享
 - [ ] 文档级权限（部门 / 角色可见性）
 - [ ] 检索评估集与离线指标（Recall@K、MRR）
 - [ ] 更完整的 OpenAPI 示例与 SDK
