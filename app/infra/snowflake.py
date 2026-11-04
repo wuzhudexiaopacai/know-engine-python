@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import socket
 import threading
 import time
 
+from app.config.settings import get_settings
 from app.core.exceptions import BizError
 
 
@@ -69,8 +72,23 @@ class SnowflakeIdGenerator:
                    (self.worker_id << self.WORKER_ID_SHIFT) | self._sequence
 
 
+def _resolve_worker_id() -> int:
+    """解析本实例的 worker_id。
+
+    显式配置 SNOWFLAKE__WORKER_ID 时直接使用；
+    未配置（-1）时按 "主机名:端口" 哈希派生，多容器/多主机部署可自然错开。
+    同主机同端口起多个进程无法自动区分，需显式指定不同 worker_id。
+    """
+    configured = get_settings().snowflake.worker_id
+    if configured >= 0:
+        return configured
+    node = f"{socket.gethostname()}:{get_settings().app.port}"
+    digest = hashlib.blake2b(node.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % (SnowflakeIdGenerator.MAX_WORKER_ID + 1)
+
+
 # 进程级单例
-_snowflake = SnowflakeIdGenerator(worker_id=1)
+_snowflake = SnowflakeIdGenerator(worker_id=_resolve_worker_id())
 
 
 def next_id() -> int:

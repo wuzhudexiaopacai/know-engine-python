@@ -97,6 +97,18 @@ class RedisConfig(BaseSettings):
     url: str = Field(default="redis://localhost:6379/0", description="空字符串表示不启用")
 
 
+class SnowflakeConfig(BaseSettings):
+    """雪花 ID 工作节点配置（env 前缀 SNOWFLAKE__）。
+
+    多实例部署时每个实例的 worker_id 必须不同，否则会生成重复 ID。
+    worker_id 置 -1 表示按主机名自动派生（容器/Pod 主机名唯一即可）。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SNOWFLAKE__", env_file=".env", extra="ignore")
+
+    worker_id: int = Field(default=-1, description="-1 表示按主机名哈希自动派生；手动指定范围 0~1023")
+
+
 class LlmConfig(BaseSettings):
     """LLM / Embedding 主模型配置（OpenAI 兼容协议，默认通义 DashScope）。"""
 
@@ -313,6 +325,7 @@ class Settings(BaseSettings):
     app: AppConfig = AppConfig()
     db: DatabaseConfig = DatabaseConfig()
     redis: RedisConfig = RedisConfig()
+    snowflake: SnowflakeConfig = SnowflakeConfig()
     llm: LlmConfig = LlmConfig()
     speech: SpeechConfig = SpeechConfig()
     image: ImageConfig = ImageConfig()
