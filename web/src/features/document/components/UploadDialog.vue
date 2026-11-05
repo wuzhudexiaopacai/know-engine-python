@@ -216,7 +216,12 @@ function close(): void {
   &__progress-text { margin: 0 0 var(--ke-space-2); font-size: 13px; color: var(--ke-brand-600); }
 }
 
-@media (max-width: 640px) {
+/* ---------- H5：表单单列排布，拖拽区收紧 ---------- */
+@media (max-width: 768px) {
   .up__grid { grid-template-columns: 1fr; }
+  .up__grid :deep(.el-input-number) { width: 100%; }
+  .up__drop :deep(.el-upload-dragger) { padding: 20px 12px; }
+  .up__drop-icon { font-size: 32px; }
+  .up__drop-hint { font-size: 11px; }
 }
 </style>

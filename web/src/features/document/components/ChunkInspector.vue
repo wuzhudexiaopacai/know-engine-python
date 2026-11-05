@@ -154,5 +154,18 @@ function barClass(v: number): string {
   &__bar-value { font-size: 10px; color: var(--ke-gray-500); font-family: monospace; }
   &__hint { margin: var(--ke-space-2) 0 0; font-size: 12px; }
   &__pager { display: flex; justify-content: flex-end; margin-top: var(--ke-space-3); }
+
+  /* ---------- H5：统计两列，向量预览与正文紧凑化 ---------- */
+  @media (max-width: 768px) {
+    &__stats { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    &__stat { padding: 8px 10px; }
+    &__stat-value { font-size: 16px; }
+    &__list { max-height: 58vh; gap: 10px; padding-right: 0; }
+    &__item { padding: 10px; }
+    &__text { font-size: 12px; max-height: 180px; padding: 8px; }
+    &__meta { gap: 6px 12px; }
+    &__bar-cell { width: 44px; }
+    &__pager { justify-content: center; }
+  }
 }
 </style>

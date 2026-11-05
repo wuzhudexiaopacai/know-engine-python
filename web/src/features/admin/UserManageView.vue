@@ -5,7 +5,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { createUser, deleteUser, listUsers, updateUser } from '@/api/admin'
 import type { AdminUserVO, UserCreatePayload, UserUpdatePayload } from '@/types/admin'
 import { formatDateTime } from '@/utils/format'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
+const { isMobile } = useBreakpoint()
 const rows = ref<AdminUserVO[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -163,7 +165,52 @@ onMounted(load)
     </section>
 
     <section class="users__table ke-card ke-card--table" aria-label="用户列表">
-      <el-table v-loading="loading" :data="rows" stripe row-key="id">
+      <!-- H5：宽表格改为信息卡片 -->
+      <div v-if="isMobile" v-loading="loading" class="users__cards">
+        <el-empty v-if="!rows.length" description="暂无普通用户，点击上方新增" />
+        <ul v-else class="ke-mlist">
+          <li v-for="row in rows" :key="row.id" class="ke-mcard">
+            <div class="ke-mcard__head">
+              <div class="users__card-id">
+                <el-avatar :size="36" :src="row.avatar || undefined" class="users__avatar">
+                  {{ avatarText(row) }}
+                </el-avatar>
+                <div class="users__card-name">
+                  <span class="ke-mcard__title">{{ row.name || row.nickname || row.phone }}</span>
+                  <span v-if="row.name || row.nickname" class="users__card-phone">{{ row.phone }}</span>
+                </div>
+              </div>
+              <el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : 'info'" effect="light">
+                {{ row.status === 'ACTIVE' ? '已启用' : row.status === 'DISABLED' ? '已停用' : row.status }}
+              </el-tag>
+            </div>
+            <div class="ke-mfacts">
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">昵称</span>
+                <span class="ke-mfact__value">{{ row.nickname || '—' }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">创建时间</span>
+                <span class="ke-mfact__value">{{ formatDateTime(row.created_at) }}</span>
+              </div>
+            </div>
+            <div class="ke-mcard__actions">
+              <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button
+                link
+                :type="row.status === 'ACTIVE' ? 'warning' : 'success'"
+                size="small"
+                @click="toggleStatus(row)"
+              >
+                {{ row.status === 'ACTIVE' ? '禁用' : '启用' }}
+              </el-button>
+              <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <el-table v-else v-loading="loading" :data="rows" stripe row-key="id">
         <template #empty>
           <el-empty description="暂无普通用户，点击右上角新增" />
         </template>
@@ -272,5 +319,22 @@ onMounted(load)
   &__table { padding: 0; }
   &__avatar { color: var(--ke-brand-600); background: var(--ke-brand-50); font-size: 13px; font-weight: 600; }
   &__pager { display: flex; justify-content: flex-end; padding: var(--ke-space-4); }
+  &__card-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  &__card-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  &__card-phone { font-size: 12px; color: var(--ke-gray-400); }
+
+  /* ---------- H5：筛选铺满、列表卡片化 ---------- */
+  @media (max-width: 768px) {
+    &__head { align-items: center; margin-bottom: 12px; gap: 8px; }
+    &__title { font-size: 18px; }
+    &__sub { font-size: 12px; line-height: 1.6; }
+
+    &__toolbar { flex-wrap: wrap; gap: 8px; padding: 10px; margin-bottom: 10px; }
+    &__kw { width: 100%; }
+    &__toolbar .el-button { width: 100%; margin-left: 0; }
+
+    &__cards { padding: 12px; }
+    &__pager { padding: 12px 0 0; justify-content: center; }
+  }
 }
 </style>

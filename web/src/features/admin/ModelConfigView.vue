@@ -8,6 +8,9 @@ import {
 } from '@/api/admin'
 import type { ModelRoleVO, ModelSavePayload, ModelVO, ModelTestPayload } from '@/types/admin'
 import { formatDateTime } from '@/utils/format'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 
 /** 供应商枚举与展示名（全部走 OpenAI 兼容协议）；short 用于表格内的紧凑标签 */
 interface ProviderOption {
@@ -314,7 +317,60 @@ onMounted(load)
     </section>
 
     <section class="model__table ke-card ke-card--table" aria-label="模型列表">
-      <el-table v-loading="loading" :data="rows" stripe row-key="id">
+      <!-- H5：宽表格改为信息卡片 -->
+      <div v-if="isMobile" v-loading="loading" class="model__cards">
+        <el-empty v-if="!rows.length" description="尚未配置模型，点击上方新增" />
+        <ul v-else class="ke-mlist">
+          <li v-for="row in rows" :key="row.id" class="ke-mcard">
+            <div class="ke-mcard__head">
+              <span class="ke-mcard__title">{{ row.display_name }}</span>
+              <div class="model__tags">
+                <el-tag v-if="row.is_default === 1" size="small" type="primary" effect="light">默认</el-tag>
+                <el-tag v-if="row.enabled === 0" size="small" type="info" effect="light">已停用</el-tag>
+                <el-tag v-else size="small" type="success" effect="light">已启用</el-tag>
+              </div>
+            </div>
+            <p v-if="row.remark" class="ke-mcard__desc">{{ row.remark }}</p>
+            <div class="model__purpose">
+              <el-tag
+                v-for="p in (row.purpose || 'chat').split(',')"
+                :key="p"
+                size="small"
+                effect="light"
+                :type="purposeTagType(p.trim())"
+              >
+                {{ purposeLabel(p.trim()) }}
+              </el-tag>
+            </div>
+            <div class="ke-mfacts">
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">供应商</span>
+                <span class="ke-mfact__value">{{ providerShort(row.provider) }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">上游模型名</span>
+                <span class="ke-mfact__value">{{ row.model_name }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">密钥</span>
+                <span class="ke-mfact__value" :class="{ 'model__warn': !row.has_api_key }">
+                  {{ row.has_api_key ? row.api_key_masked : '未配置' }}
+                </span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">更新时间</span>
+                <span class="ke-mfact__value">{{ formatDateTime(row.updated_at) }}</span>
+              </div>
+            </div>
+            <div class="ke-mcard__actions">
+              <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <el-table v-else v-loading="loading" :data="rows" stripe row-key="id">
         <template #empty>
           <el-empty description="尚未配置模型，点击右上角新增" />
         </template>
@@ -523,5 +579,30 @@ onMounted(load)
   &__role-select { width: 320px; flex: none; }
   &__role-selector { width: 100%; }
   &__role-fallback { margin-top: 4px; font-size: 12px; }
+  &__purpose { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+  /* ---------- H5：用途纵向排布，模型列表卡片化 ---------- */
+  @media (max-width: 768px) {
+    &__head { align-items: center; margin-bottom: 12px; gap: 8px; }
+    &__title { font-size: 18px; }
+    &__sub { font-size: 12px; line-height: 1.6; }
+
+    &__roles { padding: 12px; margin-bottom: 10px; }
+    &__roles-head { margin-bottom: 8px; }
+    &__role {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+      padding: 12px 0;
+    }
+    &__role-select { width: 100%; }
+    &__role-name { flex-wrap: wrap; }
+
+    &__cards { padding: 12px; }
+    &__purpose-group { grid-template-columns: 1fr; }
+    &__row { gap: 12px; }
+    &__test { flex-wrap: wrap; }
+    &__tip { font-size: 12px; }
+  }
 }
 </style>

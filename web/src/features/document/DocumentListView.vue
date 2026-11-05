@@ -10,7 +10,9 @@ import UploadDialog from './components/UploadDialog.vue'
 import VersionDrawer from './components/VersionDrawer.vue'
 import PreviewDialog from './components/PreviewDialog.vue'
 import type { UploadResult } from './composables/useChunkedUpload'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
+const { isMobile } = useBreakpoint()
 const rows = ref<DocumentVO[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -174,7 +176,52 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
     </section>
 
     <section class="doc__table ke-card ke-card--table" aria-label="文档列表">
-      <el-table v-loading="loading" :data="rows" stripe row-key="doc_id">
+      <!-- H5：宽表格改为信息卡片，操作入口完整保留 -->
+      <div v-if="isMobile" v-loading="loading" class="doc__cards">
+        <el-empty v-if="!rows.length" description="暂无文档，点击上方上传开始接入" />
+        <ul v-else class="ke-mlist">
+          <li v-for="row in rows" :key="row.doc_id" class="ke-mcard">
+            <div class="ke-mcard__head">
+              <span class="ke-mcard__title">{{ row.doc_title }}</span>
+              <el-tooltip :disabled="!errorOf(row)" :content="errorOf(row) ?? ''" placement="top">
+                <el-tag size="small" :type="DOC_STATUS_TYPE[row.status as DocumentStatus]" effect="light">
+                  {{ DOC_STATUS_LABEL[row.status as DocumentStatus] ?? row.status }}
+                </el-tag>
+              </el-tooltip>
+            </div>
+            <p v-if="row.description" class="ke-mcard__desc">{{ row.description }}</p>
+            <div class="ke-mfacts">
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">知识库</span>
+                <span class="ke-mfact__value">
+                  {{ row.knowledge_base_type === 'DATA_QUERY' ? '数据查询' : '文档检索' }}
+                </span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">版本</span>
+                <span class="ke-mfact__value">{{ row.current_version || '—' }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">分段数</span>
+                <span class="ke-mfact__value">{{ row.segment_count }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">更新时间</span>
+                <span class="ke-mfact__value">{{ formatDateTime(row.updated_at) }}</span>
+              </div>
+            </div>
+            <div class="ke-mcard__actions">
+              <el-button link type="primary" size="small" @click="openPreview(row)">预览</el-button>
+              <el-button link type="primary" size="small" @click="openVersions(row)">版本</el-button>
+              <el-button link size="small" @click="openUpload(row.doc_id)">新版本</el-button>
+              <el-button v-if="row.status === 'FAILED'" link size="small" @click="quickRetry(row)">重试</el-button>
+              <el-button link type="danger" size="small" @click="removeDoc(row)">删除</el-button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <el-table v-else v-loading="loading" :data="rows" stripe row-key="doc_id">
         <template #empty>
           <el-empty description="暂无文档，点击右上角上传开始接入" />
         </template>
@@ -306,5 +353,37 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer) })
   &__ver { color: var(--ke-gray-600); }
   &__time { display: block; white-space: nowrap; color: var(--ke-gray-500); }
   &__pager { display: flex; justify-content: flex-end; padding: var(--ke-space-4); }
+
+  /* ---------- H5：筛选换行、流程精简、列表卡片化 ---------- */
+  @media (max-width: 768px) {
+    &__head { align-items: center; margin-bottom: 12px; gap: 8px; }
+    &__title { font-size: 18px; }
+    &__sub { font-size: 12px; }
+
+    &__flow {
+      gap: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    &__flow-title,
+    &__flow-hint { width: 100%; }
+    &__steps { gap: 6px; }
+    // 窄屏隐藏步骤内的说明文字，只保留“序号 + 名称”
+    &__step em { display: none; }
+
+    &__toolbar {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    &__status,
+    &__kw { width: 100%; }
+    &__toolbar .el-button { flex: 1 1 0; }
+    &__toolbar .el-button + .el-button { margin-left: 0; }
+
+    &__cards { padding: 12px; }
+    &__pager { padding: 12px 0 0; justify-content: center; }
+  }
 }
 </style>

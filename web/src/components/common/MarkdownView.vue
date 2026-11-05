@@ -344,5 +344,15 @@ async function onCopyClick(e: MouseEvent) {
   }
   :deep(.md__mermaid svg) { max-width: 100%; height: auto; }
   :deep(.md__mermaid-error) { color: var(--ke-danger); font-size: 12px; margin-bottom: 6px; text-align: left; }
+
+  /* H5：代码块与表格收紧字号，复制按钮常驻（触屏无 hover） */
+  @media (max-width: 768px) {
+    :deep(pre) { padding: 10px; font-size: 12px; border-radius: 8px; }
+    :deep(.md__copy) { opacity: 1; }
+    :deep(table) { font-size: 0.9em; }
+    :deep(th), :deep(td) { padding: 4px 8px; }
+    :deep(.md__mermaid) { padding: 6px; }
+    :deep(blockquote) { padding: 6px 10px; }
+  }
 }
 </style>

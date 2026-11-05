@@ -406,6 +406,27 @@ async function openReference(r: RagReference): Promise<void> {
   &__tip { margin: 0 0 10px; font-size: 12px; color: var(--ke-gray-400); }
 }
 
+/* ---------- H5：收紧气泡间距与字号，长内容不撑破屏幕 ---------- */
+@media (max-width: 768px) {
+  .msg {
+    gap: 8px;
+    margin-bottom: 18px;
+
+    &__avatar { width: 26px; height: 26px; font-size: 12px; }
+    &--user &__body { max-width: 88%; }
+    &__content:not(.msg__content--user) { font-size: 14px; line-height: 1.75; }
+    &__content--user { font-size: 14px; padding: 7px 10px; }
+    &__images img { max-width: 100%; max-height: 240px; }
+    &__refs { max-width: 100%; }
+    &__ref-head { flex-wrap: wrap; }
+    &__ref-score { width: 100%; }
+    &__error { align-items: flex-start; flex-wrap: wrap; }
+  }
+
+  .ref-dialog__content { padding: 12px; max-height: 56vh; }
+  .ref-dialog__content :deep(.md) { font-size: 12px; }
+}
+
 @keyframes ke-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 @keyframes ke-dot {
   0%, 100% { opacity: 0.3; transform: translateY(0); }

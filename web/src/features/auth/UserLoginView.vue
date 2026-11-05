@@ -124,7 +124,6 @@ async function submit(): Promise<void> {
         </el-form>
 
         <div class="auth__foot">
-          <span class="ke-muted">演示账号：13800138000 / 123456</span>
           <router-link :to="{ name: 'admin-login' }" class="auth__switch">管理员登录 →</router-link>
         </div>
       </div>
@@ -223,11 +222,27 @@ async function submit(): Promise<void> {
     &:active { transform: scale(0.98); }
   }
   &__foot {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: center;
     margin-top: var(--ke-space-5); font-size: 13px;
     animation: auth-rise 0.5s var(--ke-ease-out) 0.24s both;
   }
   &__switch { color: var(--ke-brand-500); font-weight: 500; }
+
+  /* ---------- H5：单栏铺满，卡片内边距收紧，适配软键盘与安全区 ---------- */
+  @media (max-width: 480px) {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+
+    &__panel {
+      align-items: flex-start;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: max(24px, 8vh) 16px calc(24px + env(safe-area-inset-bottom));
+    }
+    &__card { padding: var(--ke-space-6) var(--ke-space-5); }
+    &__captcha-img { width: 108px; }
+  }
 }
 
 // 登录文字分组依次淡入上浮，ease-out 收尾

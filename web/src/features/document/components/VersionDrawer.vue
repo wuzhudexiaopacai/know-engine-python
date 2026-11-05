@@ -283,5 +283,27 @@ async function submitResplit(): Promise<void> {
   &__err { margin-top: var(--ke-space-2); }
   &__actions { display: flex; align-items: center; gap: var(--ke-space-2); margin-top: var(--ke-space-3); }
   &__full { width: 100%; }
+
+  /* ---------- H5：版本卡片与操作按钮换行排布 ---------- */
+  @media (max-width: 768px) {
+    &__bar {
+      gap: 8px;
+      margin-bottom: 12px;
+
+      .el-button { flex: 1 1 0; margin-left: 0; }
+    }
+    &__list { gap: 10px; }
+    &__item { padding: 12px; }
+    &__row { flex-wrap: wrap; gap: 4px; }
+    &__log { font-size: 12px; }
+    &__flow { padding: 10px; }
+    &__flow-head { flex-wrap: wrap; gap: 4px; }
+    &__actions {
+      flex-wrap: wrap;
+      gap: 8px;
+
+      .el-button + .el-button { margin-left: 0; }
+    }
+  }
 }
 </style>

@@ -149,7 +149,9 @@ function onRemove(id: string): void {
   &__del:hover { color: var(--ke-danger); background: var(--ke-gray-100); }
 }
 
-@media (max-width: 720px) {
-  .conv { position: absolute; z-index: 5; height: 100%; box-shadow: var(--ke-shadow-md); }
+/* 窄屏下由父级抽屉容器控制定位与宽度，这里只负责铺满与触屏可见性 */
+@media (max-width: 768px) {
+  .conv { width: 100%; height: 100%; }
+  .conv__del { opacity: 1; }
 }
 </style>

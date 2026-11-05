@@ -40,6 +40,8 @@ const models = ref<PublicModel[]>([])
 const selectedModelId = ref<number | null>(null)
 /** 管理员专属：是否查看全部用户的会话 */
 const viewAll = ref(false)
+/** H5：会话列表以抽屉形式展开，避免占满窄屏 */
+const mobileConvOpen = ref(false)
 const thread = ref<HTMLElement | null>(null)
 /** 用户是否已经上滑离开底部：是 → 显示「回到最新消息」悬浮按钮 */
 const showScrollBottom = ref(false)
@@ -252,6 +254,17 @@ async function openConversation(id: string): Promise<void> {
 async function selectConversation(id: string): Promise<void> {
   await openConversation(id)
   syncUrl(id)
+}
+
+/** 移动端选中会话后先收起抽屉，再加载历史 */
+function onMobileSelect(id: string): void {
+  mobileConvOpen.value = false
+  void selectConversation(id)
+}
+
+function onMobileCreate(): void {
+  mobileConvOpen.value = false
+  createConversation()
 }
 
 function createConversation(): void {
@@ -517,6 +530,9 @@ onMounted(async () => {
 })
 
 // 前进/后退：跟随地址栏参数切换会话，避免只改 URL 不换内容
+// 会话切换后收起移动端抽屉
+watch(activeId, () => { mobileConvOpen.value = false })
+
 watch(() => route.params.conversationId, (value) => {
   // 导航离开对话页（如点“模型配置”）后不再处理：此时参数自然变空，
   // 继续往下走会把地址栏 replace 回 /chat/{id}，顶掉刚发起的导航
@@ -537,19 +553,34 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 <template>
   <div class="chat">
-    <ConversationList
-      :conversations="conversations"
-      :active-id="activeId"
-      :loading="convLoading"
-      :can-view-all="auth.isAdmin"
-      :view-all="viewAll"
-      @select="selectConversation"
-      @create="createConversation"
-      @remove="removeConversation"
-      @toggle-all="onToggleAll"
-    />
+    <!-- 移动端抽屉遮罩：点击空白处收起会话列表 -->
+    <div v-if="mobileConvOpen" class="chat__conv-mask" @click="mobileConvOpen = false" />
+    <div class="chat__conv-pane" :class="{ 'is-open': mobileConvOpen }">
+      <ConversationList
+        :conversations="conversations"
+        :active-id="activeId"
+        :loading="convLoading"
+        :can-view-all="auth.isAdmin"
+        :view-all="viewAll"
+        @select="onMobileSelect"
+        @create="onMobileCreate"
+        @remove="removeConversation"
+        @toggle-all="onToggleAll"
+      />
+    </div>
 
     <section class="chat__main" :class="{ 'is-streaming': streaming }" aria-label="对话区" aria-live="polite">
+      <!-- H5 顶部条：左抽屉开关、中会话标题、右新建 -->
+      <div class="chat__mobilebar">
+        <button type="button" class="chat__mb-btn" aria-label="打开会话列表" @click="mobileConvOpen = true">
+          <el-icon :size="18"><Menu /></el-icon>
+        </button>
+        <span class="chat__mb-title ke-truncate">{{ activeConversation?.title || '新对话' }}</span>
+        <button type="button" class="chat__mb-btn" aria-label="新建对话" @click="onMobileCreate">
+          <el-icon :size="18"><Plus /></el-icon>
+        </button>
+      </div>
+
       <div ref="thread" class="chat__thread" @scroll="onThreadScroll">
         <el-skeleton v-if="threadLoading" :rows="6" animated class="chat__skeleton" />
 
@@ -626,7 +657,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           <div class="chat__composer-bar">
             <div class="chat__bar-left">
               <label class="chat__cache">
-                <el-switch v-model="useCache" size="small" :disabled="isForeign" />
+                <el-switch v-model="useCache" size="small" :disabled="isForeign" aria-label="优先命中问答缓存" />
                 <span>优先命中问答缓存</span>
               </label>
               <div
@@ -756,6 +787,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
     background: var(--ke-bg-card);
   }
+
+  // 桌面端会话列表直接作为 flex 子项；移动端由下方媒体查询改为抽屉
+  &__conv-pane { display: contents; }
+  &__conv-mask { display: none; }
+  &__mobilebar { display: none; }
 
   // overflow-x: hidden：兜底裁掉横向溢出，横向滚动条只出现在代码块内部
   &__thread {
@@ -939,8 +975,108 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   box-shadow: 0 0 0 3px var(--ke-ring);
 }
 
-@media (max-width: 720px) {
+/* ---------- H5：会话抽屉 + 紧凑对话区 ---------- */
+@media (max-width: 768px) {
   .chat { position: relative; }
-  .chat__conv { display: none; }
+
+  .chat__mobilebar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 46px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--ke-gray-100);
+    background: var(--ke-bg-card);
+  }
+  .chat__mb-btn {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--ke-radius-sm);
+    background: transparent;
+    color: var(--ke-gray-600);
+    cursor: pointer;
+    transition: background var(--ke-duration-fast), color var(--ke-duration-fast);
+
+    &:hover { background: var(--ke-bg-hover); color: var(--ke-brand-600); }
+    &:active { transform: scale(0.94); }
+  }
+  .chat__mb-title {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ke-gray-800);
+  }
+
+  /* 会话列表改为左侧滑入抽屉，带遮罩，避免挤压对话区 */
+  .chat__conv-pane {
+    display: block;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 61;
+    width: min(84vw, 320px);
+    background: var(--ke-bg-sidebar);
+    box-shadow: var(--ke-shadow-lg);
+    transform: translateX(-102%);
+    transition: transform 0.26s var(--ke-ease-out);
+    will-change: transform;
+  }
+  .chat__conv-pane.is-open { transform: translateX(0); }
+  .chat__conv-pane :deep(.conv) {
+    width: 100%;
+    height: 100%;
+    border-right: none;
+  }
+  /* 触屏没有 hover，删除入口常驻显示 */
+  .chat__conv-pane :deep(.conv__del) { opacity: 1; }
+  .chat__conv-pane :deep(.conv__head) {
+    padding-top: calc(var(--ke-space-4) + env(safe-area-inset-top));
+  }
+
+  .chat__conv-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(17, 24, 39, 0.38);
+    animation: ke-fade-in 0.2s ease both;
+  }
+
+  .chat__thread { padding: 12px 12px 4px; }
+  .chat__skeleton { padding: 0 4px; }
+  .chat__welcome { padding: 36px 4px 16px; }
+  .chat__welcome-title { font-size: 18px; }
+  .chat__welcome-sub { margin-bottom: var(--ke-space-4); }
+  .chat__chips { gap: 8px; }
+  .chat__chip { padding: 6px 12px; font-size: 12px; }
+
+  .chat__scroll-bottom { right: 16px; bottom: 16px; }
+
+  .chat__composer { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .chat__composer-inner { padding: 6px 10px; border-radius: 12px; }
+  .chat__composer-bar { flex-wrap: wrap; gap: 8px; }
+  .chat__bar-left {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: var(--ke-space-3);
+  }
+  // 窄屏隐藏缓存开关的说明文字，把宽度让给模型选择；语义由 aria-label 提供
+  .chat__cache span { display: none; }
+  .chat__actions {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .chat__model-menu { min-width: 180px; max-width: 70vw; }
+  .chat__disclaimer { margin-top: 6px; font-size: 11px; }
 }
 </style>

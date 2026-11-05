@@ -197,6 +197,7 @@ async function saveProfile(): Promise<void> {
           class="shell__navitem"
           :class="{ 'is-active': activeName === item.name }"
           :data-nav="item.name"
+          :aria-label="item.label"
           :aria-current="activeName === item.name ? 'page' : undefined"
           @click="go(item.name)"
         >
@@ -479,6 +480,41 @@ async function saveProfile(): Promise<void> {
   }
   &__crumb-sep { margin: 0 2px; color: var(--ke-gray-300); }
   &__crumb .is-current { color: var(--ke-gray-600); }
+
+  /* ---------- H5：紧凑顶栏，图标化导航，避免横向溢出 ---------- */
+  @media (max-width: 768px) {
+    height: 100vh;
+    height: 100dvh;
+
+    &__bar {
+      height: calc(52px + env(safe-area-inset-top));
+      padding: env(safe-area-inset-top) 12px 0;
+      gap: 8px;
+    }
+
+    &__nav {
+      min-width: 0;
+      gap: 0;
+    }
+    &__navitem {
+      padding: 0 8px;
+
+      // 窄屏只保留图标，标签通过 aria-label 仍可被读屏识别
+      span { display: none; }
+    }
+
+    &__spacer { min-width: 4px; }
+    &__username { display: none; }
+    &__user { padding: 2px; }
+
+    &__main { overscroll-behavior-y: contain; }
+    &__crumb { padding: 10px 12px 0; }
+  }
+
+  @media (max-width: 480px) {
+    // 超窄屏让出空间给导航图标
+    &__name { display: none; }
+  }
 }
 
 // 个人资料弹窗：头像上传区居中 + 提示文案

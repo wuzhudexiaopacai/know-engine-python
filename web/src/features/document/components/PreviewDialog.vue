@@ -197,5 +197,27 @@ function openExternal(): void {
     overflow: hidden;
     iframe { width: 100%; height: 100%; border: 0; }
   }
+
+  /* ---------- H5：工具条换行，正文与表格区域按视口高度自适应 ---------- */
+  @media (max-width: 768px) {
+    &__bar {
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    &__bar-actions { flex: 1 1 100%; }
+    &__bar-actions .el-button { flex: 1 1 0; margin-left: 0; }
+    &__body { min-height: 240px; }
+    &__md { max-height: 58vh; padding: 10px; }
+    &__sheet-scroll {
+      max-height: 54vh;
+      table {
+        font-size: 12px;
+        th, td { padding: 6px 8px; max-width: 180px; }
+        .pv__idx { width: 36px; }
+      }
+    }
+    &__frame { height: 56vh; }
+  }
 }
 </style>

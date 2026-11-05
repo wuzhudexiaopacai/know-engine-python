@@ -6,7 +6,9 @@ import { listEntries, approveEntry, rejectEntry, disableEntry } from '@/api/qaCa
 import type { QaCacheEntry } from '@/types/qaCache'
 import type { CacheStatus } from '@/types/common'
 import { CACHE_STATUS_LABEL, CACHE_STATUS_TYPE, formatDateTime } from '@/utils/format'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
+const { isMobile } = useBreakpoint()
 const rows = ref<QaCacheEntry[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -100,7 +102,58 @@ onMounted(load)
     </section>
 
     <section class="qc__table ke-card" aria-label="审核列表">
-      <el-table v-loading="loading" :data="rows" row-key="id">
+      <!-- H5：展开式表格改为卡片，答案与审核信息内联展示 -->
+      <div v-if="isMobile" v-loading="loading" class="qc__cards">
+        <el-empty v-if="!rows.length" description="暂无待审核内容" />
+        <ul v-else class="ke-mlist">
+          <li v-for="row in rows" :key="row.id" class="ke-mcard">
+            <div class="ke-mcard__head">
+              <span class="ke-mcard__title">{{ row.question }}</span>
+              <el-tag size="small" :type="CACHE_STATUS_TYPE[row.status as CacheStatus]" effect="light">
+                {{ CACHE_STATUS_LABEL[row.status as CacheStatus] ?? row.status }}
+              </el-tag>
+            </div>
+            <div class="ke-mfacts">
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">频次</span>
+                <span class="ke-mfact__value">{{ row.frequency }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">命中</span>
+                <span class="ke-mfact__value">{{ row.hits }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">质量分</span>
+                <span class="ke-mfact__value">{{ row.quality?.toFixed?.(2) ?? row.quality }}</span>
+              </div>
+              <div class="ke-mfact">
+                <span class="ke-mfact__label">创建时间</span>
+                <span class="ke-mfact__value">{{ formatDateTime(row.created_at) }}</span>
+              </div>
+            </div>
+            <div class="qc__detail">
+              <p class="qc__detail-label">标准答案</p>
+              <div class="qc__answer">{{ row.answer }}</div>
+              <dl class="qc__meta">
+                <div><dt>审核人</dt><dd>{{ row.reviewer || '—' }}</dd></div>
+                <div><dt>审核备注</dt><dd>{{ row.review_note || '—' }}</dd></div>
+                <div v-if="row.disable_reason"><dt>下线原因</dt><dd>{{ row.disable_reason }}</dd></div>
+                <div><dt>上线时间</dt><dd>{{ formatDateTime(row.activated_at) }}</dd></div>
+              </dl>
+            </div>
+            <div class="ke-mcard__actions">
+              <template v-if="isPending(row.status)">
+                <el-button link type="primary" size="small" @click="approve(row)">通过</el-button>
+                <el-button link type="danger" size="small" @click="reject(row)">驳回</el-button>
+              </template>
+              <el-button v-else-if="isOnline(row.status)" link size="small" @click="disable(row)">下线</el-button>
+              <span v-else class="ke-muted qc__none">—</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <el-table v-else v-loading="loading" :data="rows" row-key="id">
         <template #empty><el-empty description="暂无待审核内容" /></template>
 
         <el-table-column type="expand">
@@ -190,5 +243,27 @@ onMounted(load)
 
   &__none { color: var(--ke-gray-300); }
   &__pager { display: flex; justify-content: flex-end; margin-top: var(--ke-space-4); padding: 0 var(--ke-space-2); }
+
+  /* ---------- H5：筛选铺满、审核列表卡片化 ---------- */
+  @media (max-width: 768px) {
+    &__head { align-items: center; margin-bottom: 12px; gap: 8px; }
+    &__title { font-size: 18px; }
+    &__sub { font-size: 12px; line-height: 1.6; }
+
+    &__toolbar {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    &__status { width: 100%; }
+
+    &__table { padding: 12px; }
+    &__cards { padding: 0; }
+    &__detail { padding: 10px 0 0; }
+    &__answer { font-size: 12px; padding: 10px; }
+    &__meta { grid-template-columns: 1fr; gap: 6px; margin-top: 10px; }
+    &__pager { margin-top: 12px; padding: 0; justify-content: center; }
+  }
 }
 </style>
