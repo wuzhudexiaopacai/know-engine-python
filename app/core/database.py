@@ -143,16 +143,30 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # 存量库轻量迁移：create_all 只建缺失的表，不会给已有表补列；
 # 新增的可空字段在此登记，启动时幂等 ALTER（MySQL/SQLite 均支持 ADD COLUMN）。
 _EXTRA_COLUMNS: dict[str, dict[str, str]] = {
-    "user_info": {"motto": "VARCHAR(255)"},
-    "admin_info": {"avatar": "VARCHAR(512)", "motto": "VARCHAR(255)"},
     # 模型用途：存量模型默认按对话模型（chat）处理
     "llm_model": {"purpose": "VARCHAR(32) NOT NULL DEFAULT 'chat'"},
 }
+
+# SaaS 改造：存量业务表补 tenant_id，统一归入默认租户（id=1），保证平滑升级。
+# 新库由 ORM 实体直接建列，此处只覆盖存量库。
+_TENANT_TABLES = (
+    "knowledge_document", "knowledge_document_version", "knowledge_segment",
+    "chat_conversation", "chat_message", "chat_conversation_summary", "user_preference",
+    "llm_model", "model_role_binding", "table_meta", "tech_article",
+    "knowledge_subscription", "qa_cache_entry", "qa_cache_lookup", "account",
+)
 
 
 def _add_extra_columns(sync_conn) -> None:
     inspector = inspect(sync_conn)
     tables = set(inspector.get_table_names())
+    for table in _TENANT_TABLES:
+        if table not in tables:
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table)}
+        if "tenant_id" not in existing:
+            sync_conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id BIGINT NOT NULL DEFAULT 1"))
+            logger.info("tenant_column_added", table=table)
     for table, columns in _EXTRA_COLUMNS.items():
         if table not in tables:
             continue
@@ -199,4 +213,6 @@ async def init_database() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_extra_columns)
         await conn.run_sync(_upgrade_column_types)
+    from app.core.tenant import install_tenant_guards
+    install_tenant_guards()
     logger.info("database_ready")

@@ -1,7 +1,11 @@
 """初始化种子数据（幂等，可重复执行）。
 
-预置演示账号，并附加编程技术域的演示文章/订阅数据
-与 table_meta（Text2SQL Schema 感知）。生产环境通过 SEED_ENABLED=false 关闭。
+SaaS 改造后预置：
+- 平台租户（id=0, code=platform）与默认租户（id=1, code=default）
+- 权限字典与内置角色（由 rbac.ensure_rbac_seed 写入）
+- 平台超管 / 租户管理员 / 普通成员演示账号
+- 编程技术域演示文章、订阅与 table_meta（Text2SQL Schema 感知）
+生产环境通过 SEED_ENABLED=false 关闭。
 """
 
 from __future__ import annotations
@@ -14,10 +18,13 @@ from app.core import database
 from app.core.database import session_scope
 from app.core.logging import get_logger
 from app.models.entities import (
-    KnowledgeSubscription, AdminInfo, TableMeta, TechArticle, UserInfo
+    Account, AccountRole, KnowledgeSubscription, Role, TableMeta, TechArticle, Tenant,
 )
 from app.models.queries import base_filter
 from app.modules.auth.password import hash_password
+from app.modules.rbac import service as rbac
+from app.modules.rbac.constants import RoleCode
+from app.core.tenant import PLATFORM_TENANT_ID as PLATFORM
 
 logger = get_logger("app.seed")
 
@@ -34,26 +41,59 @@ async def _drop_legacy_tables() -> None:
             await conn.execute(text(f"DROP TABLE IF EXISTS {t}"))
 
 
+async def _ensure_tenant(session, tenant_id: int, code: str, name: str) -> Tenant:
+    tenant = (await session.execute(
+        base_filter(Tenant).where(Tenant.code == code))).scalar_one_or_none()
+    if tenant is None:
+        tenant = Tenant(id=tenant_id, code=code, name=name, status="ACTIVE", plan="STANDARD")
+        session.add(tenant)
+        await session.flush()
+    return tenant
+
+
+async def _ensure_account(session, tenant_id: int, login_id: str, login_type: str,
+                          name: str, nickname: str | None, role_code: str,
+                          job: str | None = None) -> None:
+    account = (await session.execute(
+        base_filter(Account).where(Account.tenant_id == tenant_id,
+                                   Account.login_type == login_type,
+                                   Account.login_id == login_id))).scalar_one_or_none()
+    if account is None:
+        account = Account(tenant_id=tenant_id, login_id=login_id, login_type=login_type,
+                          password=hash_password("123456"), name=name, nickname=nickname,
+                          job=job, status="ACTIVE")
+        session.add(account)
+        await session.flush()
+    role = (await session.execute(
+        base_filter(Role).where(Role.tenant_id == 0, Role.code == role_code))).scalar_one_or_none()
+    if role is None:
+        return
+    bound = (await session.execute(
+        base_filter(AccountRole).where(AccountRole.account_id == account.id,
+                                       AccountRole.role_id == role.id))).scalar_one_or_none()
+    if bound is None:
+        session.add(AccountRole(account_id=account.id, role_id=role.id))
+
+
 async def seed_if_needed() -> None:
-    """启动时调用：账号不存在则创建（bcrypt 哈希，绝不保存明文）。"""
+    """启动时调用：先初始化 RBAC 字典，再补齐租户/账号/演示数据。"""
     await _drop_legacy_tables()
+    await rbac.ensure_rbac_seed()
     async with session_scope() as session:
         # 清理旧汽车表的 table_meta 残留，避免其 DDL 继续注入 Text2SQL Schema
         await session.execute(delete(TableMeta).where(TableMeta.table_name.in_(_LEGACY_TABLES)))
-        # ---- 测试用户：13800138000 / 123456 ----
-        exists = (await session.execute(
-            base_filter(UserInfo).where(UserInfo.phone == "13800138000"))).scalar_one_or_none()
-        if exists is None:
-            session.add(UserInfo(phone="13800138000", password=hash_password("123456"),
-                                 name="测试用户", nickname="小测"))
 
-        # ---- 测试管理员：TEST001 / 123456 ----
-        exists = (await session.execute(
-            base_filter(AdminInfo).where(AdminInfo.emp_id == "TEST001"))).scalar_one_or_none()
-        if exists is None:
-            session.add(AdminInfo(emp_id="TEST001", name="测试管理员",
-                                  password=hash_password("123456"),
-                                  job="知识库管理员", status="ON_JOB"))
+        # ---- 平台租户（id=0）与默认租户（id=1，存量数据归属） ----
+        await _ensure_tenant(session, PLATFORM, "platform", "平台")
+        await _ensure_tenant(session, 1, "default", "默认租户")
+
+        # ---- 演示账号（统一 account 表 + RBAC 角色） ----
+        await _ensure_account(session, PLATFORM, "PLATFORM001", "EMP", "平台超管", None,
+                              RoleCode.PLATFORM_ADMIN)
+        await _ensure_account(session, 1, "TEST001", "EMP", "测试管理员", None,
+                              RoleCode.TENANT_ADMIN, job="租户管理员")
+        await _ensure_account(session, 1, "13800138000", "PHONE", "测试用户", "小测",
+                              RoleCode.MEMBER)
 
         # ---- 演示技术文章 ----
         article_exists = (await session.execute(

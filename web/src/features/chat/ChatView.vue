@@ -174,7 +174,7 @@ function toUiMessage(rec: ChatMessageRecord): UiMessage {
 async function loadConversations(): Promise<void> {
   convLoading.value = true
   try {
-    conversations.value = await listConversations(viewAll.value && auth.isAdmin ? 'all' : 'self')
+    conversations.value = await listConversations(viewAll.value && auth.can('chat:audit') ? 'all' : 'self')
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -560,7 +560,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         :conversations="conversations"
         :active-id="activeId"
         :loading="convLoading"
-        :can-view-all="auth.isAdmin"
+        :can-view-all="auth.can('chat:audit')"
         :view-all="viewAll"
         @select="onMobileSelect"
         @create="onMobileCreate"

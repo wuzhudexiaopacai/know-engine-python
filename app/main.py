@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     logger.info("app_starting", name=settings.app.name, env=settings.app.env)
 
-    # 数据库：探测引擎（MySQL→SQLite 降级）→ 开发态建表 → 幂等种子
+    # 数据库：探测引擎（MySQL→SQLite 降级）→ 开发态建表 → 租户隔离钩子 → 幂等种子
     from app.core.database import init_database
     await init_database()
     from app.models.seed import seed_if_needed

@@ -1,7 +1,9 @@
 import { del, get, post, put } from './http'
+import type { PageResult } from '@/types/common'
 import type {
   AdminUserListVO, AdminUserVO, ModelRoleVO, ModelSavePayload, ModelTestPayload,
-  ModelTestResult, ModelVO, UserCreatePayload, UserUpdatePayload,
+  ModelTestResult, ModelVO, PermissionVO, RoleSavePayload, RoleVO, TenantCreatePayload,
+  TenantUpdatePayload, TenantVO, UserCreatePayload, UserUpdatePayload,
 } from '@/types/admin'
 
 /** 模型配置列表 */
@@ -36,9 +38,43 @@ export function bindModelRole(role: string, modelId: number | null): Promise<Mod
   return put<ModelRoleVO[]>(`/admin/model-roles/${role}`, { model_id: modelId })
 }
 
-/** 普通用户列表 */
-export function listUsers(params: { page?: number; size?: number; keyword?: string }): Promise<AdminUserListVO> {
+/** 成员列表：平台超管可传 tenant_id 跨租户查询 */
+export function listUsers(params: {
+  page?: number; size?: number; keyword?: string; tenant_id?: number
+}): Promise<AdminUserListVO> {
   return get<AdminUserListVO>('/admin/users', params)
+}
+
+/** 角色列表（内置 + 本租户自建） */
+export function listRoles(tenantId?: number): Promise<RoleVO[]> {
+  return get<RoleVO[]>('/admin/roles', tenantId ? { tenant_id: tenantId } : undefined)
+}
+
+export function createRole(payload: RoleSavePayload): Promise<RoleVO> {
+  return post<RoleVO>('/admin/roles', payload)
+}
+
+export function updateRole(id: number, payload: RoleSavePayload): Promise<RoleVO> {
+  return put<RoleVO>(`/admin/roles/${id}`, payload)
+}
+
+export function listPermissions(): Promise<PermissionVO[]> {
+  return get<PermissionVO[]>('/admin/permissions')
+}
+
+/** 租户列表（平台超管） */
+export function listTenants(params: {
+  page?: number; size?: number; keyword?: string
+}): Promise<PageResult<TenantVO>> {
+  return get<PageResult<TenantVO>>('/admin/tenants', params)
+}
+
+export function createTenant(payload: TenantCreatePayload): Promise<TenantVO> {
+  return post<TenantVO>('/admin/tenants', payload)
+}
+
+export function updateTenant(id: number, payload: TenantUpdatePayload): Promise<TenantVO> {
+  return put<TenantVO>(`/admin/tenants/${id}`, payload)
 }
 
 export function createUser(payload: UserCreatePayload): Promise<unknown> {

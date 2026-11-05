@@ -109,6 +109,7 @@ class ChunkRecord:
     skip_embedding: int = 0
     accessible_by: str | None = None
     expire_at: int | None = None            # epoch 秒；None=永不过期
+    tenant_id: int = 1                      # 多租户行级隔离键
     vector: list[float] | None = None
 
 
@@ -135,6 +136,7 @@ class SearchFilter:
     doc_versions: list[int] | None = None
     user_identity: str | None = None         # 角色/工号；空=不过滤
     exclude_expired: bool = True
+    tenant_id: int | None = None             # 租户隔离；None=平台超管跨租户
 
 
 class VectorStore(ABC):
@@ -178,6 +180,7 @@ _INDEX_SETTINGS = {
             "skipEmbedding": {"type": "byte"},
             "accessibleBy": {"type": "keyword"},
             "expireAt":     {"type": "long"},
+            "tenantId":     {"type": "long"},
             "vector":       {"type": "dense_vector", "dims": 1536,
                              "index": True, "similarity": "cosine"},
         }
@@ -237,7 +240,7 @@ class ElasticsearchVectorStore(VectorStore):
                 "chunkId": r.chunk_id, "text": r.text, "documentId": r.document_id,
                 "docVersion": r.doc_version, "title": r.title, "order": r.order,
                 "skipEmbedding": r.skip_embedding, "accessibleBy": acc or ["VISITOR"],
-                "expireAt": r.expire_at,
+                "expireAt": r.expire_at, "tenantId": r.tenant_id,
             }
             if r.vector is not None:
                 src["vector"] = r.vector
@@ -270,6 +273,8 @@ class ElasticsearchVectorStore(VectorStore):
     # ---------------- 检索 ----------------
     def _filters(self, flt: SearchFilter) -> list[dict]:
         conds: list[dict] = [{"term": {"skipEmbedding": 0}}]
+        if flt.tenant_id is not None:
+            conds.append({"term": {"tenantId": flt.tenant_id}})
         if flt.doc_versions is not None:
             # terms 空列表在 ES 中匹配不到任何文档，正好对应"无可检索版本"
             conds.append({"terms": {"docVersion": flt.doc_versions}})
@@ -427,6 +432,8 @@ class DatabaseVectorStore(VectorStore):
                        KnowledgeSegment.skip_embedding == 0)
                 .limit(self._candidate_limit)
             )
+            if flt.tenant_id is not None:
+                stmt = stmt.where(KnowledgeSegment.tenant_id == flt.tenant_id)
             if flt.doc_versions is not None:
                 stmt = stmt.where(KnowledgeSegment.document_version.in_(flt.doc_versions))
             rows = (await session.execute(stmt)).scalars().all()

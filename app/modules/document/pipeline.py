@@ -147,7 +147,7 @@ async def _load_pipeline_ctx(doc_id: int, version_id: int) -> dict | None:
             "file_type": ext.get("fileType", "text"),
             "split_config": ext.get("splitConfig", {"split_type": "SMART", "chunk_size": 800}),
             "doc_title": doc.doc_title, "accessible_by": doc.accessible_by,
-            "expire_date": doc.expire_date,
+            "tenant_id": doc.tenant_id, "expire_date": doc.expire_date,
             "doc_url": ver.doc_url, "converted_doc_url": ver.converted_doc_url,
             "content_hash": ver.content_hash,
             "kb_type": doc.knowledge_base_type,
@@ -380,6 +380,7 @@ async def _split_pipeline(doc_id: int, version_id: int, force: bool = False) -> 
             seg_rows.append(KnowledgeSegment(
                 chunk_id=meta[MetaKey.CHUNK_ID], text=c.text, metadata_=meta,
                 document_id=doc_id, document_version=version_id,
+                tenant_id=ctx["tenant_id"],
                 chunk_order=meta.get(MetaKey.ORDER, 0),
                 status=SegmentStatus.STORED,
                 skip_embedding=meta.get(MetaKey.SKIP_EMBEDDING, 0),
@@ -450,7 +451,7 @@ async def _embedding_pipeline(doc_id: int, version_id: int) -> None:
             title=(s.metadata_ or {}).get(MetaKey.TITLE, ""), order=s.chunk_order,
             skip_embedding=s.skip_embedding,
             accessible_by=(s.metadata_ or {}).get(MetaKey.ACCESSIBLE_BY, "VISITOR"),
-            expire_at=expire_ts,
+            expire_at=expire_ts, tenant_id=ctx["tenant_id"],
             vector=list(map(float, np.frombuffer(s.embedding, dtype=np.float32)))
             if (s.embedding and not s.skip_embedding) else None,
         ) for s in segments]

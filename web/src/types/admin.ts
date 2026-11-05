@@ -74,15 +74,23 @@ export interface ModelTestResult {
 
 export interface AdminUserVO {
   id: number
-  phone: string
+  tenant_id: number
+  /** 登录标识：手机号或工号 */
+  login_id: string
+  login_type: LoginType
   name: string | null
   nickname: string | null
+  job: string | null
   /** 头像地址：/api/files/{key}，未设置时为 null */
   avatar: string | null
   status: string
+  /** RBAC 角色编码 */
+  roles: string[]
   lock_version: number
   created_at: string
 }
+
+export type LoginType = 'PHONE' | 'EMP'
 
 export interface AdminUserListVO {
   total: number
@@ -92,17 +100,74 @@ export interface AdminUserListVO {
 }
 
 export interface UserCreatePayload {
-  phone: string
+  login_id: string
+  login_type?: LoginType
   password: string
   name?: string | null
   nickname?: string | null
+  job?: string | null
+  role_codes?: string[]
+  tenant_id?: number | null
 }
 
 /** 编辑用户：按需传字段，password 留空表示不修改 */
 export interface UserUpdatePayload {
-  phone?: string
+  login_id?: string
   name?: string | null
   nickname?: string | null
+  job?: string | null
   password?: string
   status?: 'ACTIVE' | 'DISABLED'
+  role_codes?: string[]
+}
+
+export interface RoleSavePayload {
+  code: string
+  name: string
+  description?: string | null
+  permission_codes: string[]
+}
+
+/** 角色（内置 + 租户自建） */
+export interface RoleVO {
+  id: number
+  tenant_id: number
+  code: string
+  name: string
+  description: string | null
+  is_builtin: boolean
+  permission_codes: string[]
+}
+
+export interface PermissionVO {
+  code: string
+  name: string
+  module: string
+}
+
+export interface TenantVO {
+  id: number
+  code: string
+  name: string
+  status: string
+  plan: string
+  remark: string | null
+  created_at: string
+}
+
+export interface TenantCreatePayload {
+  code: string
+  name: string
+  plan?: string
+  remark?: string | null
+  admin_login_id: string
+  admin_name?: string | null
+  admin_password: string
+}
+
+export interface TenantUpdatePayload {
+  name?: string
+  status?: 'ACTIVE' | 'DISABLED'
+  plan?: string
+  remark?: string | null
 }

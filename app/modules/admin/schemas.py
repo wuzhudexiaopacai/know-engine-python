@@ -1,4 +1,4 @@
-"""后台管理入参/出参契约。"""
+"""后台管理入参/出参契约（成员账号 + 模型配置）。"""
 
 from __future__ import annotations
 
@@ -9,31 +9,41 @@ from pydantic import BaseModel, Field
 
 
 class UserCreateRequest(BaseModel):
-    """管理员新增普通用户账号（手机号登录，仅可对话）。"""
+    """新增成员账号：手机号（PHONE）或工号（EMP），角色按 RBAC 分配。"""
 
-    phone: str = Field(pattern=r"^1\d{10}$", description="11 位手机号，全局唯一")
+    login_id: str = Field(min_length=3, max_length=64)
+    login_type: Literal["PHONE", "EMP"] = "PHONE"
     password: str = Field(min_length=6, max_length=64)
     name: str | None = Field(default=None, max_length=64)
     nickname: str | None = Field(default=None, max_length=128)
+    job: str | None = Field(default=None, max_length=128)
+    role_codes: list[str] = Field(default_factory=lambda: ["member"])
+    tenant_id: int | None = Field(default=None, description="平台超管跨租户创建时指定")
 
 
 class UserUpdateRequest(BaseModel):
-    """管理员编辑普通用户：字段按需传，password 为空表示不改密码。"""
+    """编辑成员：字段按需传，password 为空表示不改密码。"""
 
-    phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
+    login_id: str | None = Field(default=None, min_length=3, max_length=64)
     name: str | None = Field(default=None, max_length=64)
     nickname: str | None = Field(default=None, max_length=128)
+    job: str | None = Field(default=None, max_length=128)
     password: str | None = Field(default=None, min_length=6, max_length=64)
     status: Literal["ACTIVE", "DISABLED"] | None = None
+    role_codes: list[str] | None = None
 
 
 class UserVO(BaseModel):
     id: int
-    phone: str
+    tenant_id: int
+    login_id: str
+    login_type: str
     name: str | None = None
     nickname: str | None = None
     avatar: str | None = None
+    job: str | None = None
     status: str
+    roles: list[str] = Field(default_factory=list)
     lock_version: int = 0
     created_at: datetime
 

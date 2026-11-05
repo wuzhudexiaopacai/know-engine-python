@@ -64,7 +64,8 @@
 
 - **审核式问答缓存**：高频问题挖掘 → 人工审核（通过 / 驳回）→ 上线命中 → 负反馈自动准出，带 TTL。
 - **多用途模型配置**：对话 / 图片理解 / 语音识别 / 向量化 / 精排 / 文生图 / 记忆摘要，按「用途」绑定模型，支持连通性测试与本地端点 URL 重写。
-- **双身份认证**：C 端手机号 + B 端工号；图形验证码（一次性、5 分钟有效）；签名令牌；角色感知路由守卫。
+- **SaaS 多租户 + RBAC**：租户编码登录、共享库 `tenant_id` 行级隔离；平台超管 / 租户管理员 / 知识库管理员 / 审核员 / 普通成员五级内置角色，权限点驱动前后端路由与接口鉴权。
+- **双入口认证**：C 端手机号 + B 端工号统一到账号表；图形验证码（一次性、5 分钟有效）；签名令牌；角色感知路由守卫。
 - **弹性工程**：tenacity 指数退避、三态熔断、全链路降级、分布式锁、雪花 ID、逻辑删除。
 - **可观测**：structlog 结构化日志（JSON / Console 双模式），关键链路均有事件埋点。
 
@@ -79,10 +80,10 @@ flowchart TB
     end
 
     subgraph API["接口层 app/modules/*/controller.py"]
-        AuthC["auth<br/>验证码 / 双身份登录"]
+        AuthC["auth<br/>租户登录 / RBAC 鉴权"]
         ChatC["chat<br/>SSE 对话 / 语音 / 文生图"]
         DocC["document<br/>分片上传 / 版本治理"]
-        AdminC["admin<br/>用户 / 模型用途"]
+        AdminC["admin<br/>租户 / 成员 / 角色 / 模型用途"]
         QaC["qa-cache<br/>审核工作流"]
     end
 
@@ -239,8 +240,9 @@ know-engine-python/
 │   │   ├── model_protocols.py      # 报文层策略
 │   │   └── prompt_loader.py        # Prompt 模板加载
 │   ├── modules/
-│   │   ├── auth/                   # 验证码 / 登录 / 个人资料
-│   │   ├── admin/                  # 用户与模型管理
+│   │   ├── auth/                   # 验证码 / 租户登录 / 个人资料
+│   │   ├── rbac/                   # 租户 / 角色 / 权限字典 / 授权
+│   │   ├── admin/                  # 成员 / 角色 / 租户与模型管理
 │   │   ├── model/                  # 模型解析链 / 用途绑定
 │   │   ├── document/               # 上传 / 解析 / 切片 / 流水线
 │   │   ├── rag/                    # 管道 / 检索 / 分析 / SQL / Cypher
@@ -250,7 +252,7 @@ know-engine-python/
 │   └── jobs/compensate.py          # 定时补偿任务
 ├── web/
 │   └── src/{api,components,composables,features,router,stores,styles,types,utils}
-├── tests/                          # 130 个单测（不依赖中间件）
+├── tests/                          # 135 个单测（不依赖中间件）
 ├── docs/                           # 架构与专项设计文档
 ├── sql/init/                       # MySQL 首次启动建库建账号
 ├── docker-compose.dev.yml          # 只启动中间件
@@ -333,19 +335,34 @@ python -m uvicorn app.main:app --port 8009 --reload
 
 ### 5.5 演示账号
 
-| 身份 | 账号 | 密码 | 可用页面 |
-| --- | --- | --- | --- |
-| 用户 | `13800138000` | `123456` | 智能问答 |
-| 管理员 | `TEST001` | `123456` | 智能问答 · 知识文档 · 问答审核 · 模型配置 · 用户管理 |
+SaaS 多租户模式下，登录需同时填写**租户编码**。内置两个租户：`platform`（平台方，id=0）与 `default`（默认租户，id=1）。
+
+| 身份 | 租户编码 | 账号 | 密码 | 可用页面 |
+| --- | --- | --- | --- | --- |
+| 平台超管 | `platform` | `PLATFORM001` | `123456` | 全部（含租户管理） |
+| 租户管理员 | `default` | `TEST001` | `123456` | 智能问答 · 知识文档 · 问答审核 · 模型配置 · 成员管理 |
+| 普通成员 | `default` | `13800138000` | `123456` | 智能问答 |
 
 登录需输入图形验证码（点击图片可刷新，一次性有效，5 分钟过期）。演示账号仅在本文件记录，登录页不再展示；种子账号仅在开发态自动写入，生产环境请自行创建并修改默认口令。
+
+**角色与权限（RBAC）**
+
+| 角色编码 | 名称 | 主要权限点 |
+| --- | --- | --- |
+| `platform_admin` | 平台超管 | `*`（通配全部权限，跨租户视角） |
+| `tenant_admin` | 租户管理员 | `member:manage` `role:manage` `model:manage` `document:*` `qa:review` `chat:*` |
+| `kb_admin` | 知识库管理员 | `document:read/write/delete` `qa:review` `chat:use` |
+| `reviewer` | 审核员 | `qa:review` `document:read` `chat:use` `chat:audit` |
+| `member` | 普通成员 | `document:read` `chat:use` |
+
+权限点由平台维护（`app/modules/rbac/constants.py`），角色支持租户自建并通过 `/api/admin/roles` 管理；成员可通过 `/api/admin/users/{id}/roles` 批量授权。租户数据按 `tenant_id` 行级隔离，平台超管不受此限。
 
 ### 5.6 快速自检
 
 ```bash
 python -m compileall -q app                                   # 语法 / 编码检查
 python -c "import app.main as m; print('routes:', len(m.app.routes))"
-python -m pytest tests -q                                     # 130 个单测，无需中间件
+python -m pytest tests -q                                     # 135 个单测，无需中间件
 ```
 
 ### 5.7 多实例部署
@@ -517,9 +534,9 @@ MCP__SERVERS=[{"name":"search","transport":"stdio","command":"npx","args":["-y",
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/captcha` | 图形验证码 |
-| POST | `/login` | 用户手机号登录 |
-| POST | `/admin-login` | 管理员工号登录 |
-| GET | `/me` | 恢复当前身份 |
+| POST | `/login` | 用户登录（手机号 + 租户编码） |
+| POST | `/admin-login` | 管理员登录（工号 + 租户编码） |
+| GET | `/me` | 恢复当前身份（含租户、角色、权限点） |
 | GET / PUT | `/profile` | 个人资料 |
 | POST | `/avatar` | 上传头像 |
 
@@ -586,17 +603,23 @@ SSE 事件：
 | POST | `/entries/{id}/reject` | 驳回 |
 | POST | `/entries/{id}/disable` | 下线 |
 
-### 后台管理 `/api/admin`（管理员）
+### 后台管理 `/api/admin`（按权限点鉴权）
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET / POST | `/users` | 用户列表 / 创建 |
-| PUT / DELETE | `/users/{id}` | 更新 / 删除用户 |
-| GET / POST | `/models` | 模型列表 / 新增 |
-| PUT / DELETE | `/models/{id}` | 更新 / 删除模型 |
-| POST | `/models/test` | 连通性测试（按用途发最小请求） |
-| GET | `/model-roles` | 用途视图（当前绑定 + 候选） |
-| PUT | `/model-roles/{role}` | 绑定 / 解绑用途 |
+| 方法 | 路径 | 说明 | 所需权限 |
+| --- | --- | --- | --- |
+| GET / POST | `/users` | 成员列表 / 创建 | `member:manage` |
+| PUT / DELETE | `/users/{id}` | 更新 / 删除成员 | `member:manage` |
+| PUT | `/users/{id}/roles` | 批量设置成员角色 | `role:manage` |
+| GET | `/roles` | 角色列表（含权限点） | `member:manage` |
+| POST / PUT | `/roles`、`/roles/{id}` | 新建 / 编辑角色 | `role:manage` |
+| GET | `/permissions` | 权限字典 | `member:manage` |
+| GET / POST | `/tenants` | 租户列表 / 开通租户 | `tenant:manage`（平台超管） |
+| PUT | `/tenants/{id}` | 编辑租户 / 启停 | `tenant:manage`（平台超管） |
+| GET / POST | `/models` | 模型列表 / 新增 | `model:manage` |
+| PUT / DELETE | `/models/{id}` | 更新 / 删除模型 | `model:manage` |
+| POST | `/models/test` | 连通性测试（按用途发最小请求） | `model:manage` |
+| GET | `/model-roles` | 用途视图（当前绑定 + 候选） | `model:manage` |
+| PUT | `/model-roles/{role}` | 绑定 / 解绑用途 | `model:manage` |
 
 ### 其他
 
@@ -697,7 +720,8 @@ python -m pytest tests -q
 
 - 事件投递为「至少一次」语义：重复执行由各阶段的状态门与分布式锁保证幂等；同一消息重投 5 次仍失败会丢弃并交由定时补偿兜底。
 - 消息队列采用 Redis Stream，未引入 Kafka / RabbitMQ 等独立中间件；多实例的并发控制与状态共享均依赖 Redis。
-- 权限模型为「用户 / 管理员」两级 + 文档级可见范围：上传时可通过 `accessible_by` 指定可见身份（逗号分隔的工号/手机号，缺省为 `VISITOR` 公开）；登录用户的检索身份随令牌透传，未命中的身份检索不到该文档。角色/部门级的批量授权模型未实现。
+- 多租户为「共享库 + `tenant_id` 行级隔离」：查询经 SQLAlchemy 会话事件自动注入租户条件，平台超管以 `tenant_id=None` 跨租户访问；尚未做按租户的独立库/独立 schema，也未做租户级配额与计费。
+- 权限模型为 RBAC（角色 → 权限点）+ 文档级可见范围：上传时可通过 `accessible_by` 指定可见身份（逗号分隔的工号/手机号，缺省为 `VISITOR` 公开）；登录用户的检索身份随令牌透传，未命中的身份检索不到该文档。部门级授权与数据行级策略（ABAC）未实现。
 - 未提供官方 Helm / K8s 部署清单。
 - 前端暂无自动化 E2E 测试。
 
@@ -705,7 +729,8 @@ python -m pytest tests -q
 
 - [x] 事件总线迁移到 Redis Stream，支持消费组、失败重投与多实例共享
 - [x] 文档级权限（按身份可见性：`accessible_by` + 令牌透传检索身份）
-- [ ] 角色/部门级权限模型与授权管理界面
+- [x] 多租户 SaaS（共享库行级隔离 + 租户编码登录）与 RBAC 角色权限模型
+- [ ] 租户级配额 / 计费与租户内角色管理界面的细化
 - [ ] 检索评估集与离线指标（Recall@K、MRR）
 - [ ] 更完整的 OpenAPI 示例与 SDK
 - [ ] E2E 测试（Playwright）

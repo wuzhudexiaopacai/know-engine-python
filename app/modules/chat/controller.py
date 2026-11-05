@@ -23,6 +23,7 @@ from app.infra import stop_signal
 from app.models.constants import SseEvent
 from app.modules.chat import service as chat
 from app.modules.rag import pipeline
+from app.modules.rbac.constants import PermCode
 from app.services.image import ImageCancelled, ImageError, get_image
 from app.services.speech import SpeechError, detect_audio_format, get_speech
 
@@ -114,7 +115,7 @@ async def attach_stream(conversation_id: str = Query(...),
     会话当前没有生成任务时立即返回 idle 事件，前端保留已加载的历史消息。
     """
     await chat.verify_conversation_access(conversation_id, user.owner_key,
-                                          is_admin=user.identity == "admin")
+                                          is_admin=user.has(PermCode.CHAT_AUDIT))
 
     async def encode():
         from app.infra import chat_stream as hub
@@ -167,7 +168,7 @@ async def reference_detail(chunk_id: str,
 async def list_conversations(scope: str = Query("self", pattern="^(self|all)$"),
                              user: CurrentUser = Depends(get_current_user)) -> R:
     """会话列表：默认仅本人；管理员传 scope=all 可查看全部会话。"""
-    include_all = scope == "all" and user.identity == "admin"
+    include_all = scope == "all" and user.has(PermCode.CHAT_AUDIT)
     return R.ok(await chat.list_conversations(user.owner_key, include_all))
 
 
@@ -238,14 +239,14 @@ async def memory_suggestions(user: CurrentUser = Depends(get_current_user)) -> R
 async def list_messages(conversation_id: str = Query(...),
                         user: CurrentUser = Depends(get_current_user)) -> R:
     return R.ok(await chat.list_messages(conversation_id, user.owner_key,
-                                         is_admin=user.identity == "admin"))
+                                         is_admin=user.has(PermCode.CHAT_AUDIT)))
 
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str,
                               user: CurrentUser = Depends(get_current_user)) -> R:
     await chat.delete_conversation(conversation_id, user.owner_key,
-                                   is_admin=user.identity == "admin")
+                                   is_admin=user.has(PermCode.CHAT_AUDIT))
     return R.ok(None, "会话已删除")
 
 
@@ -259,7 +260,7 @@ class FeedbackRequest(BaseModel):
 async def feedback(body: FeedbackRequest, user: CurrentUser = Depends(get_current_user)) -> R:
     """答案点赞/点踩（负反馈联动 QA 缓存准出）。"""
     await chat.feedback(body.message_id, body.helpful, body.comment,
-                        user.owner_key, is_admin=user.identity == "admin")
+                        user.owner_key, is_admin=user.has(PermCode.CHAT_AUDIT))
     return R.ok(None, "感谢您的反馈")
 
 
@@ -275,7 +276,7 @@ async def interrupt(body: InterruptRequest,
     返回 interrupted=False 仅表示该会话当前无进行中的流（幂等，前端可照常断开连接）。
     """
     await chat.verify_conversation_access(body.conversation_id, user.owner_key,
-                                          is_admin=user.identity == "admin")
+                                          is_admin=user.has(PermCode.CHAT_AUDIT))
     found = await stop_signal.request_stop(body.conversation_id)
     logger.info("chat_interrupt", user_id=user.sub, conv=body.conversation_id, found=found)
     return R.ok({"interrupted": found})

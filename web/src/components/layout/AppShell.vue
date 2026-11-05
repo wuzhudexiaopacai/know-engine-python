@@ -18,18 +18,20 @@ interface NavItem {
   name: string
   label: string
   icon: string
-  adminOnly?: boolean
+  /** 访问所需 RBAC 权限点，未配置则所有已登录用户可见 */
+  permission?: string
 }
 
 const NAV: NavItem[] = [
   { name: 'chat', label: '智能问答', icon: 'ChatDotRound' },
-  { name: 'documents', label: '知识文档', icon: 'Document', adminOnly: true },
-  { name: 'qa-cache', label: '问答审核', icon: 'Stamp', adminOnly: true },
-  { name: 'models', label: '模型配置', icon: 'Cpu', adminOnly: true },
-  { name: 'users', label: '用户管理', icon: 'User', adminOnly: true },
+  { name: 'documents', label: '知识文档', icon: 'Document', permission: 'document:read' },
+  { name: 'qa-cache', label: '问答审核', icon: 'Stamp', permission: 'qa:review' },
+  { name: 'models', label: '模型配置', icon: 'Cpu', permission: 'model:manage' },
+  { name: 'users', label: '成员管理', icon: 'User', permission: 'member:manage' },
+  { name: 'tenants', label: '租户管理', icon: 'OfficeBuilding', permission: 'tenant:manage' },
 ]
 
-const visibleNav = computed(() => NAV.filter((n) => !n.adminOnly || auth.isAdmin))
+const visibleNav = computed(() => NAV.filter((n) => !n.permission || auth.can(n.permission)))
 const activeName = computed(() => String(route.name ?? 'chat'))
 const currentLabel = computed(
   () => NAV.find((n) => n.name === activeName.value)?.label ?? '工作台',
@@ -227,6 +229,9 @@ async function saveProfile(): Promise<void> {
           <el-dropdown-menu>
             <el-dropdown-item disabled>
               {{ auth.isAdmin ? '管理员' : '普通用户' }}
+            </el-dropdown-item>
+            <el-dropdown-item v-if="auth.tenant" disabled>
+              <span class="shell__motto ke-truncate">{{ auth.tenant.name || auth.tenantCode }}</span>
             </el-dropdown-item>
             <el-dropdown-item v-if="auth.motto" disabled>
               <span class="shell__motto ke-truncate">{{ auth.motto }}</span>

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.config.settings import get_settings
 from app.core.database import session_scope
 from app.core.logging import get_logger
+from app.core.tenant import get_current_tenant
 from app.infra.vector_store import (SearchFilter, get_vector_store, has_anchor,
                                     query_terms, term_overlap)
 from app.models.constants import MetaKey
@@ -155,7 +156,8 @@ async def retrieve(query_text: str, *, user_identity: str | None = None,
     embedding = get_embedding()
     query_vector = await embedding.embed_one(query_text) if await embedding.available() else None
 
-    flt = SearchFilter(doc_versions=doc_versions, user_identity=user_identity)
+    flt = SearchFilter(doc_versions=doc_versions, user_identity=user_identity,
+                       tenant_id=get_current_tenant())
     # 向量 + 全文两路一起交给 store（ES 内部做混合；降级库内做 numpy 余弦 + LIKE）
     hits = await store.search(query_vector, query_text, cfg.chunk_top_k, flt)
 

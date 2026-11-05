@@ -14,7 +14,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
-    LargeBinary, String, Text, func
+    LargeBinary, String, Text, UniqueConstraint, func
 )
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -36,10 +36,123 @@ class AuditMixin:
     deleted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)         # 逻辑删除 0/1
 
 
+class TenantMixin:
+    """租户行级隔离字段。
+
+    `__tenant_scoped__ = True` 的实体会被 app.core.tenant 的会话事件自动注入
+    `tenant_id == 当前租户` 的过滤条件，业务代码无需逐条手写 where，
+    避免漏加条件造成跨租户数据泄露。tenant_id=0 保留给平台级数据。
+    """
+
+    __tenant_scoped__ = True
+    tenant_id: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False, index=True)
+
+
+# ------------------------------------------------------------------
+# SaaS 租户与账号
+# ------------------------------------------------------------------
+class Tenant(Base, AuditMixin):
+    """租户（企业空间）。id=0 为平台自身，code 固定 platform，不计入租户列表。"""
+
+    __tablename__ = "tenant"
+    __tenant_scoped__ = False
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
+    plan: Mapped[str] = mapped_column(String(32), default="STANDARD", nullable=False)
+    remark: Mapped[str | None] = mapped_column(String(255))
+
+
+class Account(TenantMixin, Base, AuditMixin):
+    """统一账号表：手机号（PHONE）与工号（EMP）同表，权限完全由 RBAC 决定。
+
+    登录标识在同一租户内唯一；平台账号归属 tenant_id=0。
+    """
+
+    __tablename__ = "account"
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    login_id: Mapped[str] = mapped_column(String(64), nullable=False)      # 手机号或工号
+    login_type: Mapped[str] = mapped_column(String(16), default="PHONE", nullable=False)
+    password: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(64))
+    nickname: Mapped[str | None] = mapped_column(String(128))
+    avatar: Mapped[str | None] = mapped_column(String(512))
+    motto: Mapped[str | None] = mapped_column(String(255))
+    job: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "login_type", "login_id", name="uk_account_login"),
+    )
+
+
+class Role(Base, AuditMixin):
+    """RBAC 角色。tenant_id=0 为平台内置角色，所有租户可复用；租户可自建角色。"""
+
+    __tablename__ = "role"
+    __tenant_scoped__ = False
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255))
+    is_builtin: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uk_role_code"),
+    )
+
+
+class Permission(Base, AuditMixin):
+    """权限点字典（平台统一维护，租户不可增删）。"""
+
+    __tablename__ = "permission"
+    __tenant_scoped__ = False
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    module: Mapped[str] = mapped_column(String(32), default="common", nullable=False)
+
+
+class AccountRole(Base, AuditMixin):
+    """账号-角色关联（多对多）。"""
+
+    __tablename__ = "account_role"
+    __tenant_scoped__ = False
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    role_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "role_id", name="uk_account_role"),
+    )
+
+
+class RolePermission(Base, AuditMixin):
+    """角色-权限关联（多对多）。"""
+
+    __tablename__ = "role_permission"
+    __tenant_scoped__ = False
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    role_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    permission_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("role_id", "permission_id", name="uk_role_permission"),
+    )
+
+
 # ------------------------------------------------------------------
 # 知识文档
 # ------------------------------------------------------------------
-class KnowledgeDocument(Base, AuditMixin):
+class KnowledgeDocument(TenantMixin, Base, AuditMixin):
     """知识文档表：一个文档可有多个版本，current_version_id 指向激活版本。"""
 
     __tablename__ = "knowledge_document"
@@ -63,7 +176,7 @@ class KnowledgeDocument(Base, AuditMixin):
     )
 
 
-class DocumentVersion(Base, AuditMixin):
+class DocumentVersion(TenantMixin, Base, AuditMixin):
     """文档版本表：每版本的原始/转换文件 URL、内容哈希（去重）、变更说明。"""
 
     __tablename__ = "knowledge_document_version"
@@ -85,7 +198,7 @@ class DocumentVersion(Base, AuditMixin):
     )
 
 
-class KnowledgeSegment(Base, AuditMixin):
+class KnowledgeSegment(TenantMixin, Base, AuditMixin):
     """知识分段表：chunk_id 雪花 ID 全链路唯一，父子/兄弟关系由 metadata 描述。
 
     embedding 列存储 float32 原始字节（numpy tobytes），比 JSON 省 75% 空间，
@@ -117,7 +230,7 @@ class KnowledgeSegment(Base, AuditMixin):
 # ------------------------------------------------------------------
 # 对话
 # ------------------------------------------------------------------
-class ChatConversation(Base, AuditMixin):
+class ChatConversation(TenantMixin, Base, AuditMixin):
     __tablename__ = "chat_conversation"
 
     id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
@@ -127,7 +240,7 @@ class ChatConversation(Base, AuditMixin):
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 
-class ChatMessage(Base, AuditMixin):
+class ChatMessage(TenantMixin, Base, AuditMixin):
     """对话消息：rag_references 为 JSON 数组；helpful NULL 未评价 / 1 赞 / 0 踩。"""
 
     __tablename__ = "chat_message"
@@ -152,7 +265,7 @@ class ChatMessage(Base, AuditMixin):
     )
 
 
-class ChatConversationSummary(Base, AuditMixin):
+class ChatConversationSummary(TenantMixin, Base, AuditMixin):
     """会话长期滚动摘要：每达阈值把旧消息折叠进摘要，摘要 + 最近窗口 = 上下文。
 
     滚动策略：新摘要 = LLM(旧摘要 + 自上次摘要以来的消息)，只保留每个会话最新一条。
@@ -167,7 +280,7 @@ class ChatConversationSummary(Base, AuditMixin):
     message_count: Mapped[int] = mapped_column(Integer, default=0)   # 折叠进摘要的消息条数
 
 
-class UserPreference(Base, AuditMixin):
+class UserPreference(TenantMixin, Base, AuditMixin):
     """用户对话偏好：长期记忆开关、滑动窗口大小、摘要触发轮次。
 
     user_id 即 owner_key（identity:sub），按用户隔离；无记录时由 service 惰性创建默认行。
@@ -182,39 +295,9 @@ class UserPreference(Base, AuditMixin):
 
 
 # ------------------------------------------------------------------
-# 账号
+# 模型配置
 # ------------------------------------------------------------------
-class UserInfo(Base, AuditMixin):
-    """C 端用户（手机号登录）。"""
-
-    __tablename__ = "user_info"
-
-    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    phone: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
-    password: Mapped[str] = mapped_column(String(128), nullable=False)  # bcrypt 哈希
-    name: Mapped[str | None] = mapped_column(String(64))
-    nickname: Mapped[str | None] = mapped_column(String(128))
-    avatar: Mapped[str | None] = mapped_column(String(512))
-    motto: Mapped[str | None] = mapped_column(String(255))              # 个人座右铭
-    status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
-
-
-class AdminInfo(Base, AuditMixin):
-    """B 端管理员（工号登录，兼做知识库管理员/审核员）。"""
-
-    __tablename__ = "admin_info"
-
-    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    emp_id: Mapped[str] = mapped_column(String(64), unique=True)
-    name: Mapped[str | None] = mapped_column(String(64))
-    password: Mapped[str | None] = mapped_column(String(128))
-    job: Mapped[str | None] = mapped_column(String(128))
-    avatar: Mapped[str | None] = mapped_column(String(512))
-    motto: Mapped[str | None] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(32), default="ON_JOB")
-
-
-class LlmModel(Base, AuditMixin):
+class LlmModel(TenantMixin, Base, AuditMixin):
     """对话模型配置（管理员在后台维护，普通用户按 display_name 选择）。
 
     一行即一个"可被选中的模型"，自带 OpenAI 兼容协议的 base_url/api_key，
@@ -252,6 +335,8 @@ class ModelRoleBinding(Base, AuditMixin):
 
     __tablename__ = "model_role_binding"
 
+    # 租户内每个用途只能绑定一个模型：主键为 (tenant_id, role)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, default=1)
     role: Mapped[str] = mapped_column(String(32), primary_key=True)
     model_id: Mapped[int | None] = mapped_column(BigInteger)
 
@@ -259,26 +344,30 @@ class ModelRoleBinding(Base, AuditMixin):
 # ------------------------------------------------------------------
 # Text2SQL 结构化数据（示例业务域：编程技术知识库）
 # ------------------------------------------------------------------
-class TableMeta(Base, AuditMixin):
+class TableMeta(TenantMixin, Base, AuditMixin):
     """表结构元数据：驱动 Text2SQL 的 Schema 感知。"""
 
     __tablename__ = "table_meta"
 
     id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    table_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(String(512))
     create_sql: Mapped[str | None] = mapped_column(Text)
     columns_info: Mapped[str | None] = mapped_column(Text)   # JSON 文本
     version_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
 
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "table_name", name="uk_table_meta_name"),
+    )
 
-class TechArticle(Base, AuditMixin):
+
+class TechArticle(TenantMixin, Base, AuditMixin):
     """技术文章元数据表（Text2SQL 演示数据源之一）。"""
 
     __tablename__ = "tech_article"
 
     id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    article_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    article_id: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str | None] = mapped_column(String(256), index=True)
     language: Mapped[str | None] = mapped_column(String(64), index=True)
     framework: Mapped[str | None] = mapped_column(String(64))
@@ -290,14 +379,18 @@ class TechArticle(Base, AuditMixin):
     status: Mapped[str | None] = mapped_column(String(32), default="已发布")
     description: Mapped[str | None] = mapped_column(Text)
 
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "article_id", name="uk_tech_article_id"),
+    )
 
-class KnowledgeSubscription(Base, AuditMixin):
+
+class KnowledgeSubscription(TenantMixin, Base, AuditMixin):
     """知识订阅表（Text2SQL 演示数据源之二）。"""
 
     __tablename__ = "knowledge_subscription"
 
     id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
-    subscribe_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    subscribe_id: Mapped[str] = mapped_column(String(64), nullable=False)
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     topic: Mapped[str | None] = mapped_column(String(128), index=True)
     difficulty: Mapped[str | None] = mapped_column(String(32))
@@ -306,21 +399,25 @@ class KnowledgeSubscription(Base, AuditMixin):
     create_time: Mapped[datetime | None] = mapped_column(DateTime)
     remark: Mapped[str | None] = mapped_column(Text)
 
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "subscribe_id", name="uk_subscription_id"),
+    )
+
 
 # ------------------------------------------------------------------
 # 问答缓存
 # ------------------------------------------------------------------
-class QaCacheEntry(Base, AuditMixin):
+class QaCacheEntry(TenantMixin, Base, AuditMixin):
     """审核式问答缓存条目（状态机：PENDING→APPROVED→ACTIVE→DISABLED/EXPIRED）。
 
     embedding 列仅编码"标准问题"，答案以 MySQL/本库为唯一事实源；
-    fingerprint 防重复入库，question_key 精确去重。
+    fingerprint 防重复入库，question_key 精确去重。指纹只在租户内唯一。
     """
 
     __tablename__ = "qa_cache_entry"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    fingerprint: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
     question_key: Mapped[str | None] = mapped_column(String(32), index=True)
     question: Mapped[str] = mapped_column(String(500), nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
@@ -345,10 +442,11 @@ class QaCacheEntry(Base, AuditMixin):
 
     __table_args__ = (
         Index("idx_qa_cache_status_created", "status", "created_at"),
+        Index("uk_qa_cache_fingerprint", "tenant_id", "fingerprint", unique=True),
     )
 
 
-class QaCacheLookup(Base, AuditMixin):
+class QaCacheLookup(TenantMixin, Base, AuditMixin):
     """缓存查询记录：命中占比统计的分母来源（低命中率自动准出用）。"""
 
     __tablename__ = "qa_cache_lookup"

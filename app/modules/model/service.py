@@ -20,6 +20,7 @@ from app.config.settings import get_settings
 from app.core.database import session_scope
 from app.core.exceptions import NotFoundError, ParamError
 from app.core.logging import get_logger
+from app.core.tenant import DEFAULT_TENANT_ID, get_current_tenant
 from app.models.entities import LlmModel, ModelRoleBinding
 from app.models.queries import base_filter, soft_delete, update_with_lock
 from app.modules.model.schemas import (
@@ -110,6 +111,12 @@ def _is_local_endpoint(provider: str, base_url: str) -> bool:
     except ValueError:
         return False
     return host in _LOCAL_HOSTS
+
+
+def _tid() -> int:
+    """模型用途绑定按租户隔离；平台超管无租户上下文时落到默认租户。"""
+    current = get_current_tenant()
+    return DEFAULT_TENANT_ID if current is None else current
 
 
 def _mask(key: str) -> str:
@@ -282,7 +289,8 @@ async def resolve_memory_runtime() -> ModelRuntime:
 async def _bound_model(session, role: str) -> LlmModel | None:
     """读取角色绑定并校验模型仍启用；绑定失效时返回 None，由调用方走默认降级。"""
     binding = (await session.execute(
-        base_filter(ModelRoleBinding).where(ModelRoleBinding.role == role)
+        base_filter(ModelRoleBinding).where(ModelRoleBinding.tenant_id == _tid(),
+                                           ModelRoleBinding.role == role)
     )).scalars().first()
     if binding is None or not binding.model_id:
         return None
@@ -331,7 +339,8 @@ async def list_roles() -> list[ModelRoleVO]:
     """后台「模型用途」列表：每个用途的说明、当前绑定、候选模型。"""
     async with session_scope() as session:
         bindings = {b.role: b.model_id for b in (await session.execute(
-            base_filter(ModelRoleBinding))).scalars().all()}
+            base_filter(ModelRoleBinding).where(ModelRoleBinding.tenant_id == _tid())
+        )).scalars().all()}
         rows = (await session.execute(
             base_filter(LlmModel).where(LlmModel.enabled == 1)
             .order_by(LlmModel.sort, LlmModel.id))).scalars().all()
@@ -372,10 +381,11 @@ async def bind_role(role: str, model_id: int | None) -> None:
             if not _has_purpose(row, spec["capability"]):
                 raise ParamError("该模型的能力类型与用途不匹配，请选择对应用途的模型")
         binding = (await session.execute(
-            base_filter(ModelRoleBinding).where(ModelRoleBinding.role == role)
+            base_filter(ModelRoleBinding).where(ModelRoleBinding.tenant_id == _tid(),
+                                               ModelRoleBinding.role == role)
         )).scalars().first()
         if binding is None:
-            session.add(ModelRoleBinding(role=role, model_id=model_id))
+            session.add(ModelRoleBinding(tenant_id=_tid(), role=role, model_id=model_id))
         else:
             binding.model_id = model_id
     logger.info("role_bound", role=role, model_id=model_id)

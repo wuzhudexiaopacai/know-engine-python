@@ -16,12 +16,13 @@ router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 def _require_login(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """个人资料类接口：游客不可访问。"""
-    if user.identity == "guest":
+    if user.is_guest:
         raise AuthError("请先登录")
     return user
 
 
 class UserLogin(BaseModel):
+    tenant_code: str = Field(min_length=1, max_length=32)
     phone: str = Field(pattern=r"^1\d{10}$")
     password: str = Field(min_length=1, max_length=64)
     captcha_id: str = Field(min_length=1, max_length=64)
@@ -29,6 +30,7 @@ class UserLogin(BaseModel):
 
 
 class AdminLogin(BaseModel):
+    tenant_code: str = Field(min_length=1, max_length=32)
     emp_id: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=64)
     captcha_id: str = Field(min_length=1, max_length=64)
@@ -43,26 +45,31 @@ async def captcha() -> R:
 
 @router.post("/login")
 async def login(body: UserLogin) -> R:
-    return R.ok(await auth.login_user(body.phone, body.password, captcha_id=body.captcha_id,
+    return R.ok(await auth.login_user(body.phone, body.password, tenant_code=body.tenant_code,
+                                      captcha_id=body.captcha_id,
                                       captcha_code=body.captcha_code), "登录成功")
 
 
 @router.post("/admin-login")
 async def admin_login(body: AdminLogin) -> R:
-    return R.ok(await auth.login_admin(body.emp_id, body.password, captcha_id=body.captcha_id,
+    return R.ok(await auth.login_admin(body.emp_id, body.password, tenant_code=body.tenant_code,
+                                       captcha_id=body.captcha_id,
                                        captcha_code=body.captcha_code), "登录成功")
 
 
 @router.get("/me")
 async def me(user: CurrentUser = Depends(get_current_user)) -> R:
-    if user.identity == "guest":
+    if user.is_guest:
         return R.ok({"sub": user.sub, "identity": "guest", "name": user.name,
-                     "avatar": None, "motto": None})
+                     "avatar": None, "motto": None, "tenant": None,
+                     "roles": [], "permissions": []})
     profile = await auth.get_profile(user.identity, user.sub)
     return R.ok({"sub": user.sub, "identity": profile.identity,
                  "name": profile.name, "nickname": profile.nickname,
                  "avatar": profile.avatar, "motto": profile.motto,
-                 "lock_version": profile.lock_version})
+                 "lock_version": profile.lock_version,
+                 "tenant": {"id": user.tenant_id, "code": user.tenant_code},
+                 "roles": list(user.roles), "permissions": sorted(user.permissions)})
 
 
 @router.get("/profile")

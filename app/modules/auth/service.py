@@ -1,7 +1,7 @@
 """认证 Service：口令校验 + 签名令牌。
 
 令牌选型：itsdangerous URLSafeTimedSerializer（HMAC-SHA256 签名 + 时间戳），
-无状态、可校验过期，避免引入 JWT 库；载荷仅含身份标识，敏感信息不入令牌。
+无状态、可校验过期，避免引入 JWT 库；载荷含租户与 RBAC 信息，敏感信息不入令牌。
 """
 
 from __future__ import annotations
@@ -14,20 +14,20 @@ from typing import Literal
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from PIL import Image, ImageDraw, ImageFont
-from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import get_settings
 from app.core.database import session_scope
 from app.core.exceptions import AuthError, LoginError, NotFoundError, ParamError
 from app.core.logging import get_logger
-from app.models.constants import AdminStatus, UserStatus
-from app.models.entities import AdminInfo, UserInfo
+from app.models.entities import Account
 from app.models.queries import base_filter, update_with_lock
 from app.infra.cache import get_cache
 from app.infra.file_storage import get_file_store
 from app.modules.auth.password import verify_password
 from app.modules.auth.schemas import ProfileUpdateRequest, ProfileVO
+from app.modules.rbac import service as rbac
+from app.modules.rbac.constants import ADMIN_ROLE_CODES
 
 logger = get_logger("app.auth")
 
@@ -111,10 +111,15 @@ def _serializer() -> URLSafeTimedSerializer:
 # ------------------------------------------------------------------
 # 令牌
 # ------------------------------------------------------------------
-def issue_token(subject_id: str, identity: Identity, name: str, *, rid: str | None = None) -> str:
-    """签发令牌：载荷 = {sub, identity, name, rid}；rid 为检索权限身份（工号/手机号）。"""
-    return _serializer().dumps({"sub": subject_id, "identity": identity, "name": name,
-                                "rid": rid or "VISITOR"})
+def issue_token(subject_id: str, identity: Identity, name: str, *, rid: str | None = None,
+                tenant_id: int = 1, tenant_code: str = "default",
+                roles: list[str] | None = None, permissions: list[str] | None = None) -> str:
+    """签发令牌：载荷含租户与 RBAC 信息，敏感字段（密码/密钥）一律不入令牌。"""
+    return _serializer().dumps({
+        "sub": subject_id, "identity": identity, "name": name,
+        "rid": rid or "VISITOR", "tid": tenant_id, "tcode": tenant_code,
+        "roles": roles or [], "perms": permissions or [],
+    })
 
 
 def verify_token(token: str) -> dict:
@@ -156,59 +161,56 @@ async def _record_login_failure(identity: str, account: str) -> None:
         raise LoginError("登录失败次数过多，请 10 分钟后再试")
 
 
-async def login_user(phone: str, password: str, *, captcha_id: str, captcha_code: str) -> dict:
+async def _login(login_id: str, password: str, login_type: str, tenant_code: str,
+                 captcha_id: str, captcha_code: str) -> dict:
+    """统一登录：租户编码 + 登录标识 + 口令。手机号与工号共用 account 表。"""
     await verify_captcha(captcha_id, captcha_code)
-    await _check_login_throttle("user", phone)
+    await _check_login_throttle(login_type, login_id)
+    tenant = await rbac.get_tenant_by_code(tenant_code)
+    if tenant is None or tenant.status != "ACTIVE":
+        await _record_login_failure(login_type, login_id)
+        raise LoginError("租户不存在或已停用")
     async with session_scope() as session:
-        user = (await session.execute(
-            base_filter(UserInfo).where(UserInfo.phone == phone))).scalar_one_or_none()
-    if user is None or not verify_password(password, user.password):
-        await _record_login_failure("user", phone)
-        # 统一话术，避免账号枚举
-        raise LoginError("手机号或密码错误")
-    if user.status != UserStatus.ACTIVE:
+        account = (await session.execute(
+            base_filter(Account).where(Account.tenant_id == tenant.id,
+                                       Account.login_type == login_type,
+                                       Account.login_id == login_id))).scalar_one_or_none()
+    if account is None or not verify_password(password, account.password):
+        await _record_login_failure(login_type, login_id)
+        # 统一话术，避免账号/租户枚举
+        raise LoginError("账号或密码错误")
+    if account.status != "ACTIVE":
         raise LoginError("账号已停用，请联系管理员")
-    await get_cache().delete(_fail_key("user", phone))
-    token = issue_token(str(user.id), "user", user.nickname or user.name or phone,
-                        rid=phone)
-    logger.info("user_login", user_id=user.id)
-    return {"token": token, "identity": "user",
-            "user": {"id": str(user.id), "name": user.name, "nickname": user.nickname,
-                     "avatar": user.avatar, "motto": user.motto}}
+    await get_cache().delete(_fail_key(login_type, login_id))
+
+    roles, perms = await rbac.load_identity(account.id)
+    identity: Identity = "admin" if set(roles) & ADMIN_ROLE_CODES else "user"
+    token = issue_token(str(account.id), identity, account.nickname or account.name or login_id,
+                        rid=login_id, tenant_id=tenant.id, tenant_code=tenant.code,
+                        roles=roles, permissions=perms)
+    logger.info("account_login", account_id=account.id, tenant=tenant.code, login_type=login_type)
+    return {"token": token, "identity": identity,
+            "tenant": {"id": tenant.id, "code": tenant.code, "name": tenant.name},
+            "roles": roles, "permissions": perms,
+            "user": {"id": str(account.id), "login_id": account.login_id,
+                     "name": account.name, "nickname": account.nickname,
+                     "job": account.job, "avatar": account.avatar, "motto": account.motto}}
 
 
-async def login_admin(emp_id: str, password: str, *, captcha_id: str, captcha_code: str) -> dict:
-    await verify_captcha(captcha_id, captcha_code)
-    await _check_login_throttle("admin", emp_id)
-    async with session_scope() as session:
-        admin = (await session.execute(
-            base_filter(AdminInfo).where(AdminInfo.emp_id == emp_id))).scalar_one_or_none()
-    if admin is None or not admin.password or not verify_password(password, admin.password):
-        await _record_login_failure("admin", emp_id)
-        raise LoginError("工号或密码错误")
-    if admin.status != AdminStatus.ON_JOB:
-        raise LoginError("账号已停用，请联系管理员")
-    await get_cache().delete(_fail_key("admin", emp_id))
-    token = issue_token(str(admin.id), "admin", admin.name or emp_id, rid=emp_id)
-    logger.info("admin_login", emp_id=emp_id)
-    return {"token": token, "identity": "admin",
-            "user": {"id": str(admin.id), "emp_id": admin.emp_id,
-                     "name": admin.name, "job": admin.job,
-                     "avatar": admin.avatar, "motto": admin.motto}}
+async def login_user(phone: str, password: str, *, tenant_code: str,
+                     captcha_id: str, captcha_code: str) -> dict:
+    return await _login(phone, password, "PHONE", tenant_code, captcha_id, captcha_code)
+
+
+async def login_admin(emp_id: str, password: str, *, tenant_code: str,
+                      captcha_id: str, captcha_code: str) -> dict:
+    return await _login(emp_id, password, "EMP", tenant_code, captcha_id, captcha_code)
 
 
 # ------------------------------------------------------------------
-# 个人资料（用户/管理员均可设置头像与座右铭）
+# 个人资料（统一账号，所有角色均可维护头像与座右铭）
 # ------------------------------------------------------------------
 _MAX_AVATAR_BYTES = 2 * 1024 * 1024
-
-
-def _entity(identity: str):
-    if identity == "admin":
-        return AdminInfo
-    if identity == "user":
-        return UserInfo
-    raise AuthError("请先登录")
 
 
 def _int_sub(sub: str) -> int:
@@ -218,41 +220,35 @@ def _int_sub(sub: str) -> int:
         raise NotFoundError("账号不存在") from None
 
 
-def _to_profile(row, identity: str) -> ProfileVO:
-    if identity == "admin":
-        return ProfileVO(id=row.id, identity="admin", name=row.name,
-                         avatar=row.avatar, motto=row.motto, lock_version=row.lock_version)
-    return ProfileVO(id=row.id, identity="user", name=row.name, nickname=row.nickname,
+def _to_profile(row: Account, identity: str) -> ProfileVO:
+    return ProfileVO(id=row.id, identity=identity, name=row.name, nickname=row.nickname,
                      avatar=row.avatar, motto=row.motto, lock_version=row.lock_version)
 
 
 async def get_profile(identity: str, sub: str) -> ProfileVO:
-    entity = _entity(identity)
     pk = _int_sub(sub)
     async with session_scope() as session:
         row = (await session.execute(
-            base_filter(entity).where(entity.id == pk))).scalar_one_or_none()
+            base_filter(Account).where(Account.id == pk))).scalar_one_or_none()
     if row is None:
         raise NotFoundError("账号不存在或已被删除")
     return _to_profile(row, identity)
 
 
 async def update_profile(identity: str, sub: str, req: ProfileUpdateRequest) -> ProfileVO:
-    """个人资料更新：用户可改昵称，管理员可改姓名；头像/座右铭双方都可设置。"""
-    entity = _entity(identity)
+    """个人资料更新：姓名/昵称/头像/座右铭按需修改。"""
     pk = _int_sub(sub)
     values = req.model_dump(exclude_unset=True)
     expected_lock = values.pop("lock_version", None)
-    values.pop("name" if identity != "admin" else "nickname", None)
 
     async with session_scope() as session:
         row = (await session.execute(
-            base_filter(entity).where(entity.id == pk))).scalar_one_or_none()
+            base_filter(Account).where(Account.id == pk))).scalar_one_or_none()
         if row is None:
             raise NotFoundError("账号不存在或已被删除")
         if values:
             if expected_lock is not None:
-                await update_with_lock(session, entity, "id", pk, values, expected_lock)
+                await update_with_lock(session, Account, "id", pk, values, expected_lock)
             else:
                 for field, value in values.items():
                     setattr(row, field, value)

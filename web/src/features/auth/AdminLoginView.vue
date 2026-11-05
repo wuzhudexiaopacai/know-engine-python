@@ -12,7 +12,7 @@ const route = useRoute()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
-const form = reactive({ emp_id: '', password: '', captcha_code: '' })
+const form = reactive({ tenant_code: '', emp_id: '', password: '', captcha_code: '' })
 
 // 验证码：图片 + 一次性标识，提交失败后必须换新
 const captchaImage = ref('')
@@ -20,6 +20,10 @@ const captchaId = ref('')
 const captchaLoading = ref(false)
 
 const rules: FormRules = {
+  tenant_code: [
+    { required: true, message: '请输入租户编码', trigger: 'blur' },
+    { pattern: /^[a-z][a-z0-9_-]{2,31}$/, message: '租户编码为 3-32 位小写字母/数字/-/_', trigger: 'blur' },
+  ],
   emp_id: [{ required: true, message: '请输入工号', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
   captcha_code: [{ required: true, message: '请输入验证码', trigger: 'blur' }],
@@ -51,6 +55,7 @@ async function submit(): Promise<void> {
   loading.value = true
   try {
     await auth.doLoginAdmin({
+      tenant_code: form.tenant_code.trim(),
       emp_id: form.emp_id,
       password: form.password,
       captcha_id: captchaId.value,
@@ -90,6 +95,12 @@ async function submit(): Promise<void> {
 
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top"
                  class="auth__form" @submit.prevent="submit">
+          <el-form-item label="租户编码" prop="tenant_code">
+            <el-input v-model="form.tenant_code" placeholder="请输入租户编码，如 default"
+                      size="large" clearable autocomplete="off" aria-label="租户编码">
+              <template #prefix><el-icon><OfficeBuilding /></el-icon></template>
+            </el-input>
+          </el-form-item>
           <el-form-item label="工号" prop="emp_id">
             <el-input v-model="form.emp_id" placeholder="请输入工号" size="large" clearable
                       aria-label="工号">
