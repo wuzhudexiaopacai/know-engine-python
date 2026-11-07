@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 应用外壳：顶部导航 + 角色感知的菜单 + 用户菜单；承载需登录的业务页。
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+// 应用外壳：左侧导航栏 + 内容画布；移动端导航收进抽屉，保持与桌面一致的侧边栏体验。
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
 import { fetchProfile, updateProfile, uploadAvatar } from '@/api/auth'
@@ -29,6 +29,7 @@ const NAV: NavItem[] = [
   { name: 'models', label: '模型配置', icon: 'Cpu', permission: 'model:manage' },
   { name: 'users', label: '成员管理', icon: 'User', permission: 'member:manage' },
   { name: 'tenants', label: '租户管理', icon: 'OfficeBuilding', permission: 'tenant:manage' },
+  { name: 'logs', label: '日志中心', icon: 'Tickets', permission: 'log:view' },
 ]
 
 const visibleNav = computed(() => NAV.filter((n) => !n.permission || auth.can(n.permission)))
@@ -37,30 +38,17 @@ const currentLabel = computed(
   () => NAV.find((n) => n.name === activeName.value)?.label ?? '工作台',
 )
 
+// 移动端侧边栏：汉堡按钮展开，选中菜单 / 遮罩 关闭
+const mobileOpen = ref(false)
+
 function go(name: string): void {
+  mobileOpen.value = false
   if (route.name !== name) router.push({ name })
 }
 
-// 导航下划线指示器：跟随当前 Tab 平滑移动
-const navEl = ref<HTMLElement | null>(null)
-const indicator = reactive({ left: 0, width: 0, visible: false })
-
-function syncIndicator(): void {
-  const root = navEl.value
-  if (!root) return
-  const item = root.querySelector<HTMLElement>(`[data-nav="${activeName.value}"]`)
-  if (!item) return
-  indicator.left = item.offsetLeft
-  indicator.width = item.offsetWidth
-  indicator.visible = true
-}
-
-watch(activeName, () => nextTick(syncIndicator))
-onMounted(() => {
-  nextTick(syncIndicator)
-  window.addEventListener('resize', syncIndicator)
+watch(activeName, () => {
+  mobileOpen.value = false
 })
-onBeforeUnmount(() => window.removeEventListener('resize', syncIndicator))
 
 async function onLogout(): Promise<void> {
   try {
@@ -183,16 +171,19 @@ async function saveProfile(): Promise<void> {
 </script>
 
 <template>
-  <div class="shell">
-    <header class="shell__bar" role="banner">
+  <div class="shell" :class="{ 'is-drawer-open': mobileOpen }">
+    <!-- 桌面：左侧固定导航；移动端：从左侧滑出的抽屉（与桌面同一套菜单） -->
+    <aside id="app-sidebar" class="shell__sidebar" aria-label="主导航">
       <div class="shell__brand" @click="go('chat')" tabindex="0"
              @keydown.enter="go('chat')" aria-label="返回智能问答">
         <span class="shell__logo" aria-hidden="true">K</span>
-        <span class="shell__name">KnowEngine</span>
-        <span class="shell__tag">企业级智能知识引擎</span>
+        <span class="shell__brand-text">
+          <span class="shell__name">KnowEngine</span>
+          <span class="shell__tag">企业级智能知识引擎</span>
+        </span>
       </div>
 
-      <nav ref="navEl" class="shell__nav" aria-label="主导航">
+      <nav class="shell__nav">
         <button
           v-for="item in visibleNav"
           :key="item.name"
@@ -203,69 +194,78 @@ async function saveProfile(): Promise<void> {
           :aria-current="activeName === item.name ? 'page' : undefined"
           @click="go(item.name)"
         >
-          <el-icon :size="16"><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
+          <el-icon :size="18"><component :is="item.icon" /></el-icon>
+          <span class="shell__navlabel">{{ item.label }}</span>
         </button>
-        <span
-          class="shell__nav-indicator"
-          aria-hidden="true"
-          :style="{
-            transform: `translateX(${indicator.left}px)`,
-            width: `${indicator.width}px`,
-            opacity: indicator.visible ? 1 : 0,
-          }"
-        />
       </nav>
 
-      <div class="shell__spacer" />
+      <div class="shell__side-foot">
+        <el-dropdown trigger="click" placement="top-start">
+          <button class="shell__user" aria-label="用户菜单">
+            <el-avatar :size="32" :src="auth.avatar || undefined" class="shell__avatar">{{ initial }}</el-avatar>
+            <span class="shell__user-text">
+              <span class="shell__username ke-truncate">{{ auth.displayName || '未登录' }}</span>
+              <span class="shell__usermeta ke-truncate">
+                {{ auth.tenant?.name || auth.tenantCode }} · {{ auth.isAdmin ? '管理员' : '成员' }}
+              </span>
+            </span>
+            <el-icon class="shell__chevron" :size="14"><ArrowDown /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-if="auth.motto" disabled>
+                <span class="shell__motto ke-truncate">{{ auth.motto }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item @click="toggleTheme">
+                <el-icon><component :is="isDark ? 'Sunny' : 'Moon'" /></el-icon>
+                {{ isDark ? '亮色模式' : '暗色模式' }}
+              </el-dropdown-item>
+              <el-dropdown-item divided @click="openProfile">
+                <el-icon><User /></el-icon>
+                个人资料
+              </el-dropdown-item>
+              <el-dropdown-item @click="onLogout">
+                <el-icon><SwitchButton /></el-icon>
+                退出登录
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </aside>
 
-      <el-dropdown trigger="click" placement="bottom-end">
-        <button class="shell__user" aria-label="用户菜单">
-          <el-avatar :size="30" :src="auth.avatar || undefined" class="shell__avatar">{{ initial }}</el-avatar>
-          <span class="shell__username ke-truncate">{{ auth.displayName || '未登录' }}</span>
-          <el-icon :size="14"><ArrowDown /></el-icon>
+    <transition name="shell-fade">
+      <div v-if="mobileOpen" class="shell__scrim" aria-hidden="true" @click="mobileOpen = false" />
+    </transition>
+
+    <div class="shell__content">
+      <!-- 移动端顶栏：汉堡菜单 + 当前模块 -->
+      <header class="shell__mobilebar" role="banner">
+        <button class="shell__iconbtn" aria-label="打开导航菜单"
+                :aria-expanded="mobileOpen" aria-controls="app-sidebar"
+                @click="mobileOpen = !mobileOpen">
+          <el-icon :size="20"><component :is="mobileOpen ? 'Close' : 'Menu'" /></el-icon>
         </button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item disabled>
-              {{ auth.isAdmin ? '管理员' : '普通用户' }}
-            </el-dropdown-item>
-            <el-dropdown-item v-if="auth.tenant" disabled>
-              <span class="shell__motto ke-truncate">{{ auth.tenant.name || auth.tenantCode }}</span>
-            </el-dropdown-item>
-            <el-dropdown-item v-if="auth.motto" disabled>
-              <span class="shell__motto ke-truncate">{{ auth.motto }}</span>
-            </el-dropdown-item>
-            <el-dropdown-item @click="toggleTheme">
-              <el-icon><component :is="isDark ? 'Sunny' : 'Moon'" /></el-icon>
-              {{ isDark ? '亮色模式' : '暗色模式' }}
-            </el-dropdown-item>
-            <el-dropdown-item divided @click="openProfile">
-              <el-icon><User /></el-icon>
-              个人资料
-            </el-dropdown-item>
-            <el-dropdown-item @click="onLogout">
-              <el-icon><SwitchButton /></el-icon>
-              退出登录
-            </el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
-    </header>
+        <span class="shell__mobiletitle">{{ currentLabel }}</span>
+        <button class="shell__iconbtn" aria-label="个人资料" @click="openProfile">
+          <el-avatar :size="28" :src="auth.avatar || undefined" class="shell__avatar">{{ initial }}</el-avatar>
+        </button>
+      </header>
 
-    <main class="shell__main">
-      <!-- 面包屑：非对话画布页统一展示当前模块位置 -->
-      <nav v-if="activeName !== 'chat'" class="shell__crumb" aria-label="面包屑">
-        <span>工作台</span>
-        <span class="shell__crumb-sep">/</span>
-        <span class="is-current">{{ currentLabel }}</span>
-      </nav>
-      <router-view v-slot="{ Component }">
-        <transition name="ke-page" mode="out-in">
-          <component :is="Component" />
-        </transition>
-      </router-view>
-    </main>
+      <main class="shell__main">
+        <!-- 面包屑：非对话画布页统一展示当前模块位置 -->
+        <nav v-if="activeName !== 'chat'" class="shell__crumb" aria-label="面包屑">
+          <span>工作台</span>
+          <span class="shell__crumb-sep">/</span>
+          <span class="is-current">{{ currentLabel }}</span>
+        </nav>
+        <router-view v-slot="{ Component }">
+          <transition name="ke-page" mode="out-in">
+            <component :is="Component" />
+          </transition>
+        </router-view>
+      </main>
+    </div>
 
     <el-dialog v-model="profileOpen" title="个人资料" width="min(480px, 94vw)" append-to-body>
       <div v-loading="profileLoading" class="profile">
@@ -339,129 +339,168 @@ async function saveProfile(): Promise<void> {
 <style scoped lang="scss">
 .shell {
   height: 100vh;
+  height: 100dvh;
   display: flex;
-  flex-direction: column;
   background: var(--ke-bg-page);
+  overflow: hidden;
 
-  &__bar {
-    position: relative;
-    height: var(--ke-header-h);
-    flex: 0 0 auto;
+  /* ---------------- 左侧导航（桌面常驻 / 移动端抽屉） ---------------- */
+  &__sidebar {
+    width: var(--ke-sidebar-w);
+    flex: 0 0 var(--ke-sidebar-w);
     display: flex;
-    align-items: center;
-    gap: var(--ke-space-6);
-    padding: 0 var(--ke-space-6);
-    background: var(--ke-bg-card);
-    border-bottom: 1px solid var(--ke-gray-100);
-    box-shadow: var(--ke-shadow-sm);
-    z-index: 10;
+    flex-direction: column;
+    gap: var(--ke-space-2);
+    padding: var(--ke-space-4) var(--ke-space-3) var(--ke-space-3);
+    background: var(--ke-bg-sidebar);
+    border-right: 1px solid var(--ke-gray-100);
+    z-index: 12;
   }
 
   &__brand {
     display: flex;
     align-items: center;
-    gap: var(--ke-space-2);
+    gap: 10px;
+    padding: 4px 8px 18px;
     cursor: pointer;
     user-select: none;
+    border-radius: var(--ke-radius-md);
+    &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 2px; }
   }
   &__logo {
-    width: 28px;
-    height: 28px;
-    border-radius: var(--ke-radius-sm);
-    background: var(--ke-brand-500);
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--ke-brand-500), var(--ke-brand-400));
     color: var(--ke-on-brand);
     font-weight: 700;
     display: grid;
     place-items: center;
-    font-size: 15px;
+    font-size: 16px;
+    box-shadow: var(--ke-shadow-brand);
+  }
+  &__brand-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
   &__name {
-    font-weight: 600;
+    font-weight: 650;
     font-size: 15px;
     color: var(--ke-gray-900);
     letter-spacing: 0.2px;
+    line-height: 1.2;
   }
   &__tag {
-    font-size: 12px;
+    margin-top: 3px;
+    font-size: 11px;
     color: var(--ke-gray-400);
-    padding-left: var(--ke-space-3);
-    border-left: 1px solid var(--ke-gray-200);
-    @media (max-width: 960px) {
-      display: none;
-    }
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   &__nav {
-    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 2px;
-    height: 100%;
+    padding: 2px;
+    scrollbar-width: thin;
   }
   &__navitem {
     position: relative;
-    z-index: 1;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 6px;
-    height: 100%;
-    padding: 0 var(--ke-space-4);
+    gap: 10px;
+    height: 42px;
+    padding: 0 12px;
     border: none;
+    border-radius: var(--ke-radius-md);
     background: transparent;
-    color: var(--ke-gray-700);
+    color: var(--ke-gray-600);
     font-size: 14px;
     font-weight: 500;
+    text-align: left;
     cursor: pointer;
-    transition: color var(--ke-duration-base), transform var(--ke-duration-fast);
+    transition: background var(--ke-duration-fast), color var(--ke-duration-fast);
 
-    // 非选中项仅文字加深，不使用灰色底块
-    &:hover { background: transparent; color: var(--ke-gray-900); }
-    &:active { transform: scale(0.97); }
+    .el-icon { flex: 0 0 auto; }
+    &:hover { background: var(--ke-bg-hover); color: var(--ke-gray-900); }
+    &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 1px; }
+    &:active { transform: scale(0.985); }
     &.is-active {
-      background: transparent;
+      background: var(--ke-bg-active);
       color: var(--ke-brand-600);
       font-weight: 600;
     }
+    // 选中项左侧强调条：克制的品牌色，避免整块高饱和底色
+    &.is-active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 3px;
+      height: 18px;
+      border-radius: 0 3px 3px 0;
+      background: var(--ke-brand-500);
+      transform: translateY(-50%);
+    }
+  }
+  &__navlabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  // 选中下划线：一条独立指示器，随 Tab 切换平滑移动
-  &__nav-indicator {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 2px;
-    border-radius: 2px;
-    background: var(--ke-brand-500);
-    pointer-events: none;
-    transition: transform var(--ke-duration-base) var(--ke-ease-out),
-                width var(--ke-duration-base) var(--ke-ease-out),
-                opacity var(--ke-duration-fast);
+  &__side-foot {
+    flex: 0 0 auto;
+    padding-top: var(--ke-space-3);
+    border-top: 1px solid var(--ke-gray-100);
   }
-
-  &__spacer { flex: 1; }
-
   &__user {
-    display: inline-flex;
+    width: 100%;
+    display: flex;
     align-items: center;
-    gap: var(--ke-space-2);
-    padding: 4px 6px 4px 4px;
-    border: 1px solid transparent;
-    border-radius: var(--ke-radius-sm);
+    gap: 10px;
+    padding: 8px;
+    border: none;
+    border-radius: var(--ke-radius-md);
     background: transparent;
     cursor: pointer;
-    transition: border-color var(--ke-duration-fast), background var(--ke-duration-fast);
-    &:hover { border-color: var(--ke-gray-200); background: var(--ke-bg-hover); }
+    text-align: left;
+    transition: background var(--ke-duration-fast);
+    &:hover { background: var(--ke-bg-hover); }
+    &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 1px; }
   }
   &__avatar {
+    flex: 0 0 auto;
     background: var(--ke-brand-500);
     color: var(--ke-on-brand);
     font-weight: 600;
   }
-  &__username {
-    max-width: 120px;
-    font-size: 14px;
-    color: var(--ke-gray-700);
+  &__user-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
+  &__username {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ke-gray-800);
+  }
+  &__usermeta {
+    font-size: 11.5px;
+    color: var(--ke-gray-400);
+  }
+  &__chevron { color: var(--ke-gray-400); }
   &__motto {
     display: inline-block;
     max-width: 220px;
@@ -470,6 +509,14 @@ async function saveProfile(): Promise<void> {
     color: var(--ke-gray-400);
   }
 
+  /* ---------------- 内容画布 ---------------- */
+  &__content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  &__mobilebar { display: none; }
   &__main {
     flex: 1;
     min-height: 0;
@@ -486,40 +533,88 @@ async function saveProfile(): Promise<void> {
   &__crumb-sep { margin: 0 2px; color: var(--ke-gray-300); }
   &__crumb .is-current { color: var(--ke-gray-600); }
 
-  /* ---------- H5：紧凑顶栏，图标化导航，避免横向溢出 ---------- */
+  &__scrim { display: none; }
+
+  /* ---------------- H5：侧边栏变抽屉，保持桌面同款层级 ---------------- */
   @media (max-width: 768px) {
-    height: 100vh;
-    height: 100dvh;
-
-    &__bar {
-      height: calc(52px + env(safe-area-inset-top));
-      padding: env(safe-area-inset-top) 12px 0;
-      gap: 8px;
+    &__sidebar {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(82vw, 300px);
+      flex-basis: auto;
+      padding-top: calc(var(--ke-space-4) + env(safe-area-inset-top));
+      transform: translateX(-104%);
+      transition: transform var(--ke-duration-base) var(--ke-ease-out);
+      box-shadow: var(--ke-shadow-lg);
+      z-index: 30;
+    }
+    // 抽屉打开态
+    &.is-drawer-open {
+      .shell__sidebar { transform: translateX(0); }
     }
 
-    &__nav {
+    &__scrim {
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 12, 20, 0.42);
+      backdrop-filter: blur(2px);
+      z-index: 25;
+    }
+
+    &__mobilebar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: calc(54px + env(safe-area-inset-top));
+      padding: env(safe-area-inset-top) 10px 0;
+      background: var(--ke-bg-page);
+      border-bottom: 1px solid var(--ke-gray-100);
+      z-index: 20;
+    }
+    &__iconbtn {
+      width: 36px;
+      height: 36px;
+      flex: 0 0 36px;
+      display: grid;
+      place-items: center;
+      border: none;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--ke-gray-600);
+      cursor: pointer;
+      transition: background var(--ke-duration-fast);
+      &:hover { background: var(--ke-bg-hover); }
+      &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 1px; }
+    }
+    &__mobiletitle {
+      flex: 1;
       min-width: 0;
-      gap: 0;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ke-gray-800);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    &__navitem {
-      padding: 0 8px;
-
-      // 窄屏只保留图标，标签通过 aria-label 仍可被读屏识别
-      span { display: none; }
-    }
-
-    &__spacer { min-width: 4px; }
-    &__username { display: none; }
-    &__user { padding: 2px; }
 
     &__main { overscroll-behavior-y: contain; }
-    &__crumb { padding: 10px 12px 0; }
+    &__crumb { padding: 10px 14px 0; }
   }
+}
 
-  @media (max-width: 480px) {
-    // 超窄屏让出空间给导航图标
-    &__name { display: none; }
-  }
+// 抽屉遮罩淡入淡出
+.shell-fade-enter-active,
+.shell-fade-leave-active {
+  transition: opacity var(--ke-duration-base) ease;
+}
+.shell-fade-enter-from,
+.shell-fade-leave-to {
+  opacity: 0;
 }
 
 // 个人资料弹窗：头像上传区居中 + 提示文案
