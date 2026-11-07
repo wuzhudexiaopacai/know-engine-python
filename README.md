@@ -64,7 +64,7 @@
 
 - **审核式问答缓存**：高频问题挖掘 → 人工审核（通过 / 驳回）→ 上线命中 → 负反馈自动准出，带 TTL。
 - **多用途模型配置**：对话 / 图片理解 / 语音识别 / 向量化 / 精排 / 文生图 / 记忆摘要，按「用途」绑定模型，支持连通性测试与本地端点 URL 重写。
-- **SaaS 多租户 + RBAC**：租户编码登录、共享库 `tenant_id` 行级隔离；平台超管 / 租户管理员 / 知识库管理员 / 审核员 / 普通成员五级内置角色，权限点驱动前后端路由与接口鉴权。
+- **SaaS 多租户 + RBAC**：租户编码登录、共享库 `tenant_id` 行级隔离；平台超管 / 租户管理员 / 知识库管理员 / 审核员 / 普通成员五级内置角色，权限点驱动前后端路由与接口鉴权。架构细节见 [SaaS 多租户架构](docs/saas/README.md)。
 - **双入口认证**：C 端手机号 + B 端工号统一到账号表；图形验证码（一次性、5 分钟有效）；签名令牌；角色感知路由守卫。
 - **弹性工程**：tenacity 指数退避、三态熔断、全链路降级、分布式锁、雪花 ID、逻辑删除。
 - **可观测**：structlog 结构化日志（JSON / Console 双模式），关键链路均有事件埋点。
@@ -351,8 +351,8 @@ SaaS 多租户模式下，登录需同时填写**租户编码**。内置两个�
 | --- | --- | --- |
 | `platform_admin` | 平台超管 | `*`（通配全部权限，跨租户视角） |
 | `tenant_admin` | 租户管理员 | `member:manage` `role:manage` `model:manage` `document:*` `qa:review` `chat:*` |
-| `kb_admin` | 知识库管理员 | `document:read/write/delete` `qa:review` `chat:use` |
-| `reviewer` | 审核员 | `qa:review` `document:read` `chat:use` `chat:audit` |
+| `kb_admin` | 知识库管理员 | `document:read/write/delete` `chat:use` |
+| `reviewer` | 审核员 | `qa:review` `document:read` `chat:use` |
 | `member` | 普通成员 | `document:read` `chat:use` |
 
 权限点由平台维护（`app/modules/rbac/constants.py`），角色支持租户自建并通过 `/api/admin/roles` 管理；成员可通过 `/api/admin/users/{id}/roles` 批量授权。租户数据按 `tenant_id` 行级隔离，平台超管不受此限。
