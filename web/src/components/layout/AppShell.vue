@@ -6,7 +6,9 @@ import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus
 import { fetchProfile, updateProfile, uploadAvatar } from '@/api/auth'
 import { getChatPreferences, updateChatPreferences } from '@/api/chat'
 import { useAuthStore } from '@/stores/auth'
+import { useChatSidebarStore } from '@/stores/chatSidebar'
 import { useTheme } from '@/composables/useTheme'
+import ConversationList from '@/features/chat/components/ConversationList.vue'
 import type { ProfileUpdatePayload } from '@/types/auth'
 
 const auth = useAuthStore()
@@ -38,12 +40,27 @@ const currentLabel = computed(
   () => NAV.find((n) => n.name === activeName.value)?.label ?? '工作台',
 )
 
+// 对话页把历史会话挂在导航下方，桌面/移动端共用同一条侧边栏
+const chatSidebar = useChatSidebarStore()
+const isChat = computed(() => activeName.value === 'chat')
+const canAuditChat = computed(() => auth.can('chat:audit'))
+
 // 移动端侧边栏：汉堡按钮展开，选中菜单 / 遮罩 关闭
 const mobileOpen = ref(false)
 
 function go(name: string): void {
   mobileOpen.value = false
   if (route.name !== name) router.push({ name })
+}
+
+function onSidebarSelect(id: string): void {
+  mobileOpen.value = false
+  chatSidebar.select(id)
+}
+
+function onSidebarCreate(): void {
+  mobileOpen.value = false
+  chatSidebar.create()
 }
 
 watch(activeName, () => {
@@ -183,7 +200,7 @@ async function saveProfile(): Promise<void> {
         </span>
       </div>
 
-      <nav class="shell__nav">
+      <nav class="shell__nav" :class="{ 'is-compact': isChat }">
         <button
           v-for="item in visibleNav"
           :key="item.name"
@@ -198,6 +215,34 @@ async function saveProfile(): Promise<void> {
           <span class="shell__navlabel">{{ item.label }}</span>
         </button>
       </nav>
+
+      <!-- 对话页：历史会话并入侧边栏导航下方，不再单独占一列 -->
+      <div v-if="isChat" class="shell__convs">
+        <div class="shell__convs-head">
+          <span class="shell__convs-title">会话</span>
+          <button class="shell__newbtn" aria-label="新建对话" @click="onSidebarCreate">
+            <el-icon :size="16"><Plus /></el-icon>
+          </button>
+        </div>
+        <div v-if="canAuditChat" class="shell__scope">
+          <span>全部用户会话</span>
+          <el-switch
+            :model-value="chatSidebar.viewAll"
+            size="small"
+            @update:model-value="chatSidebar.toggleAll($event as boolean)"
+          />
+        </div>
+        <div class="shell__convs-scroll">
+          <ConversationList
+            :conversations="chatSidebar.conversations"
+            :active-id="chatSidebar.activeId"
+            :loading="chatSidebar.loading"
+            :view-all="chatSidebar.viewAll"
+            @select="onSidebarSelect"
+            @remove="chatSidebar.remove"
+          />
+        </div>
+      </div>
 
       <div class="shell__side-foot">
         <el-dropdown trigger="click" placement="top-start">
@@ -456,6 +501,68 @@ async function saveProfile(): Promise<void> {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ---------------- 对话页：导航下方的会话列表 ---------------- */
+  &__nav.is-compact {
+    flex: 0 1 auto;
+    max-height: 46%;
+  }
+  &__convs {
+    flex: 1 1 auto;
+    min-height: 96px;
+    display: flex;
+    flex-direction: column;
+    margin-top: var(--ke-space-2);
+    padding-top: var(--ke-space-2);
+    border-top: 1px solid var(--ke-gray-100);
+  }
+  &__convs-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 6px 6px 10px;
+  }
+  &__convs-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ke-gray-400);
+    letter-spacing: 0.3px;
+  }
+  &__newbtn {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--ke-radius-sm);
+    background: transparent;
+    color: var(--ke-gray-500);
+    cursor: pointer;
+    transition: background var(--ke-duration-fast), color var(--ke-duration-fast),
+                transform var(--ke-duration-fast);
+    &:hover { background: var(--ke-bg-active); color: var(--ke-brand-600); }
+    &:active { transform: scale(0.94); }
+    &:focus-visible { outline: 2px solid var(--ke-brand-400); outline-offset: 1px; }
+  }
+  &__scope {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ke-space-2);
+    padding: 0 10px 8px;
+    font-size: 11.5px;
+    color: var(--ke-gray-400);
+  }
+  &__convs-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 2px;
+    scrollbar-width: thin;
   }
 
   &__side-foot {
