@@ -236,7 +236,12 @@ async def set_member_roles(account_id: int, role_ids: list[int], tenant_id: int)
     """接口入口：独立事务内覆盖角色并返回最新角色码。"""
     async with session_scope() as session:
         await assign_roles(session, account_id, role_ids, tenant_id)
-        return await load_roles(session, account_id)
+        roles = await load_roles(session, account_id)
+    from app.modules.audit import service as audit
+    await audit.record(module="rbac", action="role_assign", target_type="account",
+                       target_id=account_id, tenant_id=tenant_id,
+                       detail={"roles": roles})
+    return roles
 
 
 async def load_roles(session, account_id: int) -> list[str]:
@@ -287,7 +292,13 @@ async def create_tenant(req: TenantCreateRequest) -> TenantVO:
         await session.flush()
         session.add(AccountRole(account_id=account.id, role_id=role_id))
         await session.flush()
-        return _to_tenant_vo(tenant)
+        vo = _to_tenant_vo(tenant)
+    from app.modules.audit import service as audit
+    await audit.record(module="tenant", action="tenant_create", target_type="tenant",
+                       target_id=tenant.id, tenant_id=tenant.id,
+                       detail={"code": tenant.code, "name": tenant.name,
+                               "admin_login_id": req.admin_login_id})
+    return vo
 
 
 async def update_tenant(tenant_id: int, req: TenantUpdateRequest) -> TenantVO:
@@ -301,7 +312,11 @@ async def update_tenant(tenant_id: int, req: TenantUpdateRequest) -> TenantVO:
             if value is not None:
                 setattr(tenant, key, value)
         await session.flush()
-        return _to_tenant_vo(tenant)
+        vo = _to_tenant_vo(tenant)
+    from app.modules.audit import service as audit
+    await audit.record(module="tenant", action="tenant_update", target_type="tenant",
+                       target_id=tenant_id, tenant_id=tenant_id, detail=values)
+    return vo
 
 
 async def get_tenant_by_code(code: str) -> Tenant | None:

@@ -32,6 +32,7 @@ class PermCode(StrEnum):
     QA_REVIEW = "qa:review"
     CHAT_USE = "chat:use"
     CHAT_AUDIT = "chat:audit"
+    LOG_VIEW = "log:view"
 
 
 # (权限码, 名称, 模块) —— 启动时幂等写入 permission 表
@@ -46,6 +47,7 @@ PERMISSION_CATALOG: tuple[tuple[str, str, str], ...] = (
     (PermCode.QA_REVIEW, "问答审核", "qa_cache"),
     (PermCode.CHAT_USE, "智能问答", "chat"),
     (PermCode.CHAT_AUDIT, "会话审计", "chat"),
+    (PermCode.LOG_VIEW, "日志中心", "observability"),
 )
 
 # (角色码, 角色名, 描述, 权限集合)
@@ -55,6 +57,7 @@ BUILTIN_ROLES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         PermCode.MEMBER_MANAGE, PermCode.ROLE_MANAGE, PermCode.MODEL_MANAGE,
         PermCode.DOC_READ, PermCode.DOC_WRITE, PermCode.DOC_DELETE,
         PermCode.QA_REVIEW, PermCode.CHAT_USE, PermCode.CHAT_AUDIT,
+        PermCode.LOG_VIEW,
     )),
     (RoleCode.KB_ADMIN, "知识库管理员", "维护知识文档与切片", (
         PermCode.DOC_READ, PermCode.DOC_WRITE, PermCode.DOC_DELETE, PermCode.CHAT_USE,

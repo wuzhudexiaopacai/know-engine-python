@@ -62,6 +62,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/features/admin/TenantManageView.vue'),
         meta: { title: '租户管理', requiresAuth: true, permission: 'tenant:manage' },
       },
+      {
+        path: 'logs',
+        name: 'logs',
+        component: () => import('@/features/admin/LogCenterView.vue'),
+        meta: { title: '日志中心', requiresAuth: true, permission: 'log:view' },
+      },
     ],
   },
   {

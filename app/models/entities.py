@@ -455,3 +455,43 @@ class QaCacheLookup(TenantMixin, Base, AuditMixin):
     entry_id: Mapped[str | None] = mapped_column(String(36), index=True)  # 命中条目；未命中为空
     hit: Mapped[bool] = mapped_column(Boolean, default=False)
     queried_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+
+# ------------------------------------------------------------------
+# 操作审计（业务侧「谁在什么时间做了什么」）
+# ------------------------------------------------------------------
+class OperationLog(TenantMixin, Base, AuditMixin):
+    """操作日志表：与 ES 系统日志互补。
+
+    - 本表回答「谁做了什么」（账号、模块、动作、目标、结果），供日志中心默认展示；
+    - ES 回答「系统内部发生了什么」（异常堆栈、耗时、调用链），供排障检索；
+    - 由中间件对写请求自动记录，关键业务（登录/租户/角色）由业务层显式补语义字段；
+    - 队列满或库异常时只丢弃审计，不阻塞业务请求。
+    """
+
+    __tablename__ = "operation_log"
+
+    id: Mapped[int] = mapped_column(PkBigInt, primary_key=True, autoincrement=True)
+    account_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    identity: Mapped[str | None] = mapped_column(String(32))        # user / admin
+    account_name: Mapped[str | None] = mapped_column(String(128))
+    module: Mapped[str] = mapped_column(String(32), default="app", nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), default="", nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String(32))
+    target_id: Mapped[str | None] = mapped_column(String(64))
+    method: Mapped[str | None] = mapped_column(String(16))
+    path: Mapped[str | None] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(16), default="SUCCESS", nullable=False, index=True)
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    request_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(255))
+    detail: Mapped[dict | None] = mapped_column(JSON)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(),
+                                                 nullable=False, index=True)
+
+    __table_args__ = (
+        Index("idx_operation_log_tenant_time", "tenant_id", "created_at"),
+        Index("idx_operation_log_module_action", "module", "action"),
+    )

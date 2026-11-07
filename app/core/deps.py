@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from fastapi import Depends, Header, HTTPException, Query
 
+from app.core.request_context import bind_identity
 from app.core.tenant import DEFAULT_TENANT_ID, set_current_tenant
 from app.modules.auth import service as auth
 from app.modules.rbac.constants import ALL, RoleCode
@@ -48,6 +49,7 @@ class CurrentUser:
 def _resolve(token: str | None) -> CurrentUser:
     if not token:
         set_current_tenant(DEFAULT_TENANT_ID)
+        bind_identity(DEFAULT_TENANT_ID, None, "guest", "游客")
         return CurrentUser(sub="anonymous", identity="guest", name="游客",
                            tenant_id=DEFAULT_TENANT_ID, permissions=frozenset(),
                            identity_for_retrieval="VISITOR", is_guest=True)
@@ -56,9 +58,11 @@ def _resolve(token: str | None) -> CurrentUser:
     tid = int(data.get("tid", DEFAULT_TENANT_ID))
     # 平台超管需要跨租户视角，不做租户过滤；其余账号只看到本租户数据
     set_current_tenant(None if RoleCode.PLATFORM_ADMIN in roles else tid)
+    name = data.get("name", "")
+    bind_identity(tid, str(data["sub"]), data.get("identity", "user"), name)
     return CurrentUser(
         sub=str(data["sub"]), identity=data.get("identity", "user"),
-        name=data.get("name", ""), tenant_id=tid,
+        name=name, tenant_id=tid,
         tenant_code=data.get("tcode", "default"), roles=roles,
         permissions=frozenset(data.get("perms") or ()),
         identity_for_retrieval=str(data.get("rid") or "VISITOR"),

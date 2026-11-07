@@ -154,9 +154,17 @@ async def _check_login_throttle(identity: str, account: str) -> None:
         raise LoginError("登录失败次数过多，请 10 分钟后再试")
 
 
-async def _record_login_failure(identity: str, account: str) -> None:
+async def _record_login_failure(identity: str, account: str, *, reason: str,
+                                tenant_code: str | None = None,
+                                tenant_id: int | None = None) -> None:
     count = await get_cache().incr_raw(_fail_key(identity, account), _LOGIN_FAIL_WINDOW)
-    logger.warning("login_failed", identity=identity, account=account, count=count)
+    logger.warning("login_failed", identity=identity, account=account, count=count,
+                   reason=reason)
+    from app.modules.audit import service as audit
+    await audit.record(module="auth", action="login", status="FAILED", status_code=4010,
+                       account_name=account, tenant_id=tenant_id,
+                       detail={"login_type": identity, "login_id": account,
+                               "tenant_code": tenant_code, "reason": reason})
     if count >= _LOGIN_FAIL_MAX:
         raise LoginError("登录失败次数过多，请 10 分钟后再试")
 
@@ -168,7 +176,8 @@ async def _login(login_id: str, password: str, login_type: str, tenant_code: str
     await _check_login_throttle(login_type, login_id)
     tenant = await rbac.get_tenant_by_code(tenant_code)
     if tenant is None or tenant.status != "ACTIVE":
-        await _record_login_failure(login_type, login_id)
+        await _record_login_failure(login_type, login_id, reason="租户不存在或已停用",
+                                    tenant_code=tenant_code)
         raise LoginError("租户不存在或已停用")
     async with session_scope() as session:
         account = (await session.execute(
@@ -176,10 +185,13 @@ async def _login(login_id: str, password: str, login_type: str, tenant_code: str
                                        Account.login_type == login_type,
                                        Account.login_id == login_id))).scalar_one_or_none()
     if account is None or not verify_password(password, account.password):
-        await _record_login_failure(login_type, login_id)
+        await _record_login_failure(login_type, login_id, reason="账号或密码错误",
+                                    tenant_code=tenant_code, tenant_id=tenant.id)
         # 统一话术，避免账号/租户枚举
         raise LoginError("账号或密码错误")
     if account.status != "ACTIVE":
+        await _record_login_failure(login_type, login_id, reason="账号已停用",
+                                    tenant_code=tenant_code, tenant_id=tenant.id)
         raise LoginError("账号已停用，请联系管理员")
     await get_cache().delete(_fail_key(login_type, login_id))
 
@@ -189,6 +201,11 @@ async def _login(login_id: str, password: str, login_type: str, tenant_code: str
                         rid=login_id, tenant_id=tenant.id, tenant_code=tenant.code,
                         roles=roles, permissions=perms)
     logger.info("account_login", account_id=account.id, tenant=tenant.code, login_type=login_type)
+    from app.modules.audit import service as audit
+    await audit.record(module="auth", action="login", status="SUCCESS",
+                       tenant_id=tenant.id, account_id=account.id, identity=identity,
+                       account_name=account.nickname or account.name or login_id,
+                       detail={"login_type": login_type, "tenant_code": tenant.code})
     return {"token": token, "identity": identity,
             "tenant": {"id": tenant.id, "code": tenant.code, "name": tenant.name},
             "roles": roles, "permissions": perms,

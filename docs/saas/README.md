@@ -277,6 +277,7 @@ set_current_tenant(None if RoleCode.PLATFORM_ADMIN in roles else tid)
 | `qa:review` | 问答审核 | qa_cache |
 | `chat:use` | 智能问答 | chat |
 | `chat:audit` | 会话审计（查看全部会话） | chat |
+| `log:view` | 日志中心（操作日志 + 系统日志） | observability |
 
 ### 5.2 内置角色
 
@@ -292,6 +293,7 @@ set_current_tenant(None if RoleCode.PLATFORM_ADMIN in roles else tid)
 | `qa:review` | ✓ | ✓ | — | ✓ | — |
 | `chat:use` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `chat:audit` | ✓ | ✓ | — | — | — |
+| `log:view` | ✓ | ✓ | — | — | — |
 
 - 平台超管权限为通配 `*`，接口仅判断「拥有该权限」即可，无需为超管单独写分支。
 - 内置角色写在各租户可复用（`role.tenant_id = 0`）；租户自建角色编码不得与内置角色冲突。
@@ -452,6 +454,7 @@ sequenceDiagram
 | POST | `/models/test` | `model:manage` |
 | GET | `/model-roles` | `model:manage` |
 | PUT | `/model-roles/{role}` | `model:manage` |
+| GET | `/logs/operations`、`/logs/system` | `log:view` |
 
 ### 8.3 业务接口权限
 
@@ -460,6 +463,10 @@ sequenceDiagram
 | 知识文档 `/api/document` | `document:read` | 上传/重试/切换版本 `document:write`；删除 `document:delete` |
 | 问答审核 `/api/qa-cache` | `qa:review` | 通过/驳回 `qa:review` |
 | 智能问答 `/api/chat` | `chat:use` | 会话审计 `scope=all` 需 `chat:audit` |
+
+所有写操作（POST/PUT/PATCH/DELETE）由统一中间件自动落 `operation_log`；
+登录、租户开通/编辑、角色分配等关键操作由业务层显式补充语义字段与目标对象。
+审计写入走异步队列，失败只丢审计、不影响业务响应。
 
 ---
 
@@ -522,6 +529,7 @@ if (permission && auth.isAuthenticated && !auth.can(permission)) {
 | `/models` | `model:manage` |
 | `/users` | `member:manage` |
 | `/tenants` | `tenant:manage` |
+| `/logs` | `log:view` |
 
 ### 10.3 导航与页面
 
@@ -529,6 +537,8 @@ if (permission && auth.isAuthenticated && !auth.can(permission)) {
 - 登录两页均新增「租户编码」输入（必填，带格式校验），随请求提交 `tenant_code`。
 - 成员管理页支持登录方式（手机号/工号）、登录标识、角色多选；角色标签来自 `/api/admin/roles`。
 - 租户管理页 `TenantManageView.vue` 提供搜索、开通（含初始管理员）、编辑套餐与启停，桌面表格 + H5 卡片两套布局。
+- 日志中心 `LogCenterView.vue` 双 Tab：操作日志（MySQL）与系统日志（ES），支持筛选与 request_id 全链路追踪；
+  多实例日志统一方案见 [统一日志服务](../observability/logging.md)。
 
 ---
 

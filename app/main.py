@@ -19,10 +19,12 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config.settings import get_settings
 from app.core.exceptions import register_exception_handlers
-from app.core.logging import get_logger, setup_logging
+from app.core.logging import get_logger, setup_logging, shutdown_logging
+from app.core.request_context import RequestContextMiddleware
 from app.core.response import R
 from app.jobs import compensate
 from app.modules.admin import controller as admin_controller
+from app.modules.audit import controller as audit_controller
 from app.modules.auth import controller as auth_controller
 from app.modules.chat import controller as chat_controller
 from app.modules.document import controller as document_controller
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI):
     await init_database()
     from app.models.seed import seed_if_needed
     await seed_if_needed()
+
+    # 操作审计：后台批量落库（先有表再有消费者）
+    from app.modules.audit import service as audit_service
+    await audit_service.start()
 
     # 文档流水线监听器（事件驱动：上传→转换→切片→向量化）
     document_pipeline.register_listeners()
@@ -81,6 +87,13 @@ async def lifespan(app: FastAPI):
     await get_rerank().close()
     await close_speech()
     await close_image()
+    # 审计队列先落库再停日志线程
+    try:
+        from app.modules.audit import service as audit_service
+        await audit_service.stop()
+    except Exception:  # pragma: no cover
+        pass
+    shutdown_logging()
     logger.info("app_stopped")
 
 
@@ -102,12 +115,17 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
+# 请求上下文：X-Request-ID 透传 + access 日志 + 写操作自动审计
+# （最后注册 = 最外层，保证所有请求（含 404/异常）都有 request_id）
+app.add_middleware(RequestContextMiddleware)
+
 # ---------------- REST 路由 ----------------
 app.include_router(auth_controller.router)
 app.include_router(document_controller.router)
 app.include_router(chat_controller.router)
 app.include_router(qa_cache_controller.router)
 app.include_router(admin_controller.router)
+app.include_router(audit_controller.router)
 
 
 @app.get("/api/health", response_model=R)

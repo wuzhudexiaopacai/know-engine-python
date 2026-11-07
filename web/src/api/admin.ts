@@ -2,7 +2,8 @@ import { del, get, post, put } from './http'
 import type { PageResult } from '@/types/common'
 import type {
   AdminUserListVO, AdminUserVO, ModelRoleVO, ModelSavePayload, ModelTestPayload,
-  ModelTestResult, ModelVO, PermissionVO, RoleSavePayload, RoleVO, TenantCreatePayload,
+  ModelTestResult, ModelVO, OperationLogListVO, PermissionVO, RoleSavePayload, RoleVO,
+  SystemLogListVO, TenantCreatePayload,
   TenantUpdatePayload, TenantVO, UserCreatePayload, UserUpdatePayload,
 } from '@/types/admin'
 
@@ -89,4 +90,27 @@ export function updateUser(id: number, payload: UserUpdatePayload, lockVersion: 
 /** 逻辑删除用户 */
 export function deleteUser(id: number, lockVersion: number): Promise<null> {
   return del<null>(`/admin/users/${id}`, { params: { lock_version: lockVersion } })
+}
+
+// ---------------- 日志中心 ----------------
+
+/** 操作日志（谁在什么时间做了什么） */
+export function listOperationLogs(params: {
+  page?: number; size?: number; keyword?: string; module?: string; action?: string
+  status?: string; account_id?: number; tenant_id?: number; start?: string; end?: string
+}): Promise<OperationLogListVO> {
+  return get<OperationLogListVO>('/admin/logs/operations', params)
+}
+
+/** 操作日志模块下拉 */
+export function listLogModules(): Promise<string[]> {
+  return get<string[]>('/admin/logs/operations/modules')
+}
+
+/** 系统日志（ES 集中检索；未配置时 degraded=true） */
+export function listSystemLogs(params: {
+  page?: number; size?: number; keyword?: string; level?: string; request_id?: string
+  module?: string; tenant_id?: number; start?: string; end?: string
+}): Promise<SystemLogListVO> {
+  return get<SystemLogListVO>('/admin/logs/system', params)
 }

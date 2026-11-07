@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = BASE_DIR.parent
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -133,6 +134,32 @@ class EventConfig(BaseSettings):
     stream_enabled: bool = Field(default=True, description="Redis 可用时是否使用 Stream 作为事件队列")
     backlog_warn: int = Field(default=2000, description="Stream 积压条数告警阈值（调度器每分钟巡检）")
     pending_warn: int = Field(default=100, description="未 ACK 消息数告警阈值（持续偏高说明消费异常）")
+
+
+class LoggingConfig(BaseSettings):
+    """统一日志服务配置（env 前缀 LOGGING__）。
+
+    多实例部署时日志写入两处：
+    1. 本地滚动文件（archive 兜底，容器挂载卷后可留档）；
+    2. Elasticsearch 集中索引（所有实例汇入同一日志中心，支持检索与聚合）。
+    ES 不可用时自动降级为仅本地文件，绝不阻塞业务请求。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="LOGGING__", env_file=".env", extra="ignore")
+
+    level: str = Field(default="INFO", description="DEBUG/INFO/WARNING/ERROR")
+    file_enabled: bool = Field(default=True, description="是否写本地滚动日志文件")
+    file_dir: str = Field(default=str(PROJECT_ROOT / "logs"), description="日志目录（容器内建议挂载共享卷）")
+    file_name: str = Field(default="know-engine.log",
+                           description="文件名；支持 {host}/{pid} 占位，多实例共享卷时各写各的文件")
+    retention_days: int = Field(default=30, ge=1, description="本地日志保留天数")
+    # ---- 集中检索（Elasticsearch，复用 VECTOR__ES_URL）----
+    es_enabled: bool = Field(default=True, description="是否把日志批量写入 ES 日志索引")
+    es_index_prefix: str = "know-engine-logs"
+    es_bulk_size: int = Field(default=200, ge=1, description="单批写入条数")
+    es_flush_interval: float = Field(default=2.0, gt=0, description="队列最长等待秒数")
+    es_queue_size: int = Field(default=20000, ge=100, description="内存队列上限，满则丢弃（降级不阻塞）")
+    query_max_size: int = Field(default=500, ge=1, le=2000, description="日志中心单页查询上限")
 
 
 class LlmConfig(BaseSettings):
@@ -357,6 +384,7 @@ class Settings(BaseSettings):
     snowflake: SnowflakeConfig = SnowflakeConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     event: EventConfig = EventConfig()
+    logging: LoggingConfig = LoggingConfig()
     llm: LlmConfig = LlmConfig()
     speech: SpeechConfig = SpeechConfig()
     image: ImageConfig = ImageConfig()

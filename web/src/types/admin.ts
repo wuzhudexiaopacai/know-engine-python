@@ -171,3 +171,67 @@ export interface TenantUpdatePayload {
   plan?: string
   remark?: string | null
 }
+
+// ---------------- 日志中心 ----------------
+
+/** 操作日志（MySQL operation_log） */
+export interface OperationLogVO {
+  id: number
+  request_id: string | null
+  tenant_id: number
+  account_id: number | null
+  identity: string | null
+  account_name: string | null
+  module: string
+  action: string
+  target_type: string | null
+  target_id: string | null
+  method: string | null
+  path: string | null
+  status: 'SUCCESS' | 'FAILED' | string
+  status_code: number | null
+  ip: string | null
+  duration_ms: number | null
+  detail: Record<string, unknown> | null
+  created_at: string | null
+}
+
+export interface OperationLogListVO {
+  total: number
+  page_num: number
+  page_size: number
+  records: OperationLogVO[]
+}
+
+/** 系统日志（Elasticsearch 日志索引，字段为动态 JSON） */
+export interface SystemLogVO {
+  _id?: string
+  '@timestamp'?: string
+  level?: string
+  event?: string
+  logger?: string
+  service?: string
+  env?: string
+  host?: string
+  instance?: string
+  request_id?: string
+  tenant_id?: number | null
+  account_id?: string | null
+  module?: string
+  action?: string
+  method?: string
+  path?: string
+  status_code?: number
+  duration_ms?: number
+  client_ip?: string
+  [key: string]: unknown
+}
+
+export interface SystemLogListVO {
+  /** ES 不可用/未配置时为 true，前端展示降级说明 */
+  degraded: boolean
+  reason?: string
+  backend: string
+  total: number
+  records: SystemLogVO[]
+}

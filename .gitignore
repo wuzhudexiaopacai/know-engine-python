@@ -16,6 +16,7 @@ venv/
 
 # ---- 运行时数据与日志（SQLite 降级库 / 上传落地 / uvicorn 日志）----
 data/
+logs/
 *.log
 
 # ---- 前端 ----

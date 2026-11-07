@@ -67,7 +67,7 @@
 - **SaaS 多租户 + RBAC**：租户编码登录、共享库 `tenant_id` 行级隔离；平台超管 / 租户管理员 / 知识库管理员 / 审核员 / 普通成员五级内置角色，权限点驱动前后端路由与接口鉴权。架构细节见 [SaaS 多租户架构](docs/saas/README.md)。
 - **双入口认证**：C 端手机号 + B 端工号统一到账号表；图形验证码（一次性、5 分钟有效）；签名令牌；角色感知路由守卫。
 - **弹性工程**：tenacity 指数退避、三态熔断、全链路降级、分布式锁、雪花 ID、逻辑删除。
-- **可观测**：structlog 结构化日志（JSON / Console 双模式），关键链路均有事件埋点。
+- **可观测**：structlog 结构化日志（JSON / Console 双模式）+ 请求级 `X-Request-ID`；多实例日志统一汇入 ES，操作审计落 MySQL，Web「日志中心」双 Tab 检索。详见 [统一日志服务](docs/observability/logging.md)。
 
 ---
 
@@ -173,6 +173,45 @@ flowchart LR
 ```
 
 > QA 缓存不会命中时效性问题：含「今天 / 最新 / 价格 / 版本」等关键词的问题会跳过缓存，并在 system prompt 中注入当前日期。
+
+### 2.3 统一日志服务（多实例）
+
+多副本 / 多机部署时，日志不再散落在各个容器里，而是**统一汇入两个可检索的存储**，本地文件只做留档兜底：
+
+```mermaid
+flowchart TB
+    subgraph Instances["应用实例（--scale api=3）"]
+        A1["api-1<br/>stdout + 滚动文件 + ES 队列"]
+        A2["api-2<br/>stdout + 滚动文件 + ES 队列"]
+        A3["api-3<br/>stdout + 滚动文件 + ES 队列"]
+    end
+
+    subgraph Obs["统一日志服务"]
+        File["logs/know-engine-{host}.log<br/>每日滚动 · 保留 30 天 · JSON Lines"]
+        ES[("Elasticsearch<br/>know-engine-logs-YYYY.MM<br/>全实例共用索引")]
+        DB[("MySQL operation_log<br/>操作审计表")]
+    end
+
+    Web["Web 日志中心 /logs<br/>权限 log:view"]
+    Nginx["Nginx / 网关<br/>透传 X-Request-ID"]
+
+    Nginx --> A1 & A2 & A3
+    A1 --> File
+    A2 --> File
+    A3 --> File
+    A1 & A2 & A3 -- 有界队列 + bulk，失败降级 --> ES
+    A1 & A2 & A3 -- 异步队列批量落库 --> DB
+    ES --> Web
+    DB --> Web
+```
+
+- **系统日志（ES）**：所有实例写同一个按月索引，携带 `service / env / host / instance / request_id / tenant_id / account_id`，可按实例、级别、链路检索；写入走「有界队列 + 后台线程 + bulk」，ES 故障只丢弃日志，不阻塞请求。
+- **操作日志（MySQL）**：`operation_log` 记录「谁在什么时间对什么做了什么、结果如何」，写请求由中间件自动记录，登录、租户开通、角色分配等关键操作补充语义字段；同样异步批量落库。
+- **本地文件**：`TimedRotatingFileHandler` 每日滚动、保留 30 天，文件名支持 `{host}` 占位，多副本共享卷时各写各的文件，避免滚动冲突。
+- **请求链路**：统一生成 / 透传 `X-Request-ID` 并回写响应头，access 日志、业务日志、审计记录共享同一个 request_id，可一键串起「操作 → 调用 → 异常」。
+- **统一治理**：structlog 统一格式并接管 uvicorn / SQLAlchemy；敏感字段（密码、Token、Authorization、API Key）落盘前递归脱敏。
+
+配置项见 [6.2 中间件与第三方服务](#62-中间件与第三方服务)，完整设计与排障手册见 [统一日志服务](docs/observability/logging.md)。
 
 ---
 
@@ -384,6 +423,7 @@ STORAGE__UPLOAD_ROOT=/mnt/shared/upload_sessions   # 共享卷 / NFS，否则分
 | 文档处理事件 | 事件写入 Redis Stream，消费组内一条事件只被一个实例处理；未 ACK 自动重投 |
 | SSE 续流 / 停止生成 | 事件缓冲与停止信号写入 Redis，任意实例都能续流和中断；Nginx 会话粘性仅用于减少重连抖动 |
 | 熔断锁 / 验证码 / 缓存 | Redis 共享（未配置 Redis 时自动降级为进程内，仅适合单机） |
+| 统一日志 | 本地滚动文件 + ES 日志索引双写；所有实例写同一个 `know-engine-logs-*` 索引，Web「日志中心」按 `log:view` 检索；ES 不可用时自动降级为仅本地文件 |
 
 代理配置示例见 [`deploy/nginx.conf`](deploy/nginx.conf)：除会话粘性外，还关闭了响应缓冲与 gzip，
 否则 SSE 的 token 会被攒批下发、前端看起来"卡住后才一次性出现"。
@@ -451,6 +491,16 @@ docker compose -f docker-compose.prod.yml -f docker-compose.multi.yml up -d --sc
 | `STORAGE__ACCESS_KEY` / `SECRET_KEY` | `minioadmin` | 与 compose 对齐 |
 | `STORAGE__MAX_UPLOAD_BYTES` | `200MB` | 单文件上限 |
 | `STORAGE__CHUNK_SIZE` | `5MB` | 推荐分片大小 |
+| `LOGGING__LEVEL` | `INFO` | 日志级别 |
+| `LOGGING__FILE_ENABLED` | `true` | 是否写本地滚动文件（每日滚动，JSON Lines） |
+| `LOGGING__FILE_DIR` | `./logs` | 日志目录；容器建议挂载持久卷 |
+| `LOGGING__FILE_NAME` | `know-engine.log` | 文件名，支持 `{host}` 占位（多副本共享卷时各写各的文件） |
+| `LOGGING__RETENTION_DAYS` | `30` | 本地日志保留天数 |
+| `LOGGING__ES_ENABLED` | `true` | 是否把日志批量写入 ES（复用 `VECTOR__ES_URL`） |
+| `LOGGING__ES_INDEX_PREFIX` | `know-engine-logs` | 日志索引前缀，实际按月 `前缀-YYYY.MM` |
+| `LOGGING__ES_QUEUE_SIZE` | `20000` | 内存队列上限，满则丢弃（降级不阻塞） |
+
+日志服务设计与排障见 [统一日志服务](docs/observability/logging.md)。
 
 ### 6.3 能力开关
 
@@ -620,6 +670,9 @@ SSE 事件：
 | POST | `/models/test` | 连通性测试（按用途发最小请求） | `model:manage` |
 | GET | `/model-roles` | 用途视图（当前绑定 + 候选） | `model:manage` |
 | PUT | `/model-roles/{role}` | 绑定 / 解绑用途 | `model:manage` |
+| GET | `/logs/operations` | 操作日志分页查询（MySQL） | `log:view` |
+| GET | `/logs/operations/modules` | 操作日志模块筛选 | `log:view` |
+| GET | `/logs/system` | 系统日志分页检索（ES，不可用时返回 degraded） | `log:view` |
 
 ### 其他
 

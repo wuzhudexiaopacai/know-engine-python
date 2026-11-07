@@ -155,6 +155,11 @@ services:
       STORAGE__SECURE: "false"
       # 分片上传会话目录：多实例共用同一卷；多主机部署请改为 NFS/共享存储挂载点
       STORAGE__UPLOAD_ROOT: /app/data/upload_sessions
+      # ---- 统一日志：本地留档在 api-data 卷；集中检索复用上面的 Elasticsearch ----
+      LOGGING__FILE_DIR: /app/data/logs
+      # 多副本共享卷时按主机名分文件，避免多进程同时滚动同一个日志文件
+      LOGGING__FILE_NAME: know-engine-{host}.log
+      LOGGING__ES_ENABLED: "true"
     ports:
       - "8009:8009"
     # 本地模型（Ollama/vLLM）跑在宿主机时，容器内用 host.docker.internal 访问；
