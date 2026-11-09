@@ -1,0 +1,169 @@
+# KnowEngine-Python —— 本地模型编排（叠在主编排之上）
+#
+# 支持两种模式，用 profile 与 MODEL_HOST 切换；不需要的模型可以通过 profile 不启动。
+#
+# ┌─ 模式 A：业务 + 模型都在容器里（全本地，一条命令起全栈）
+# │    docker compose -f docker-compose.prod.yml -f docker-compose.local-models.yml \
+# │      --profile models --profile rerank up -d --build
+# │    拉模型：同上再加 --profile init run --rm ollama-init
+# │    MODEL_HOST 默认 ollama（容器服务名），无需额外设置。
+# │
+# └─ 模式 B：只起业务容器，模型仍在宿主机（localhost:11434 / 8080 / 8001）
+#      .env 写：MODEL_HOST=host.docker.internal
+#               RERANK_HOST=host.docker.internal
+#               SPEECH_HOST=host.docker.internal
+#      docker compose -f docker-compose.prod.yml -f docker-compose.local-models.yml up -d --build
+#      宿主机需要先把 Ollama / llama.cpp / FunASR 起好，并监听 0.0.0.0（不能只听 127.0.0.1）。
+#
+# 参数（都可在 .env 覆盖）：
+#   MODEL_HOST             对话/向量主机：ollama（模式 A 默认）| host.docker.internal（模式 B）
+#   RERANK_HOST            精排主机：rerank（模式 A 默认）| host.docker.internal（模式 B）
+#   SPEECH_HOST            语音主机：speech（模式 A 默认）| host.docker.internal（模式 B）
+#   LOCAL_LLM_BASE_URL     对话/向量完整地址，优先级高于上面的主机名拼接
+#   LOCAL_RERANK_BASE_URL  精排完整地址
+#   LOCAL_SPEECH_BASE_URL  语音完整地址
+#   LOCAL_CHAT_MODEL / LOCAL_FLASH_MODEL / LOCAL_EMBEDDING_MODEL
+#   RERANK_MODEL_FILE      精排 GGUF 文件名
+#   COMPOSE_PROFILES       可代替命令行 --profile，例如 models,rerank
+#
+# 后端直接跑在宿主机（开发环境、不用 compose）时：模型地址就是 http://localhost:11434 等，
+# 系统会把 localhost 视作本地端点（免 API Key），不需要任何额外参数。
+#
+# 详细说明见 docs/local-models-docker.md
+services:
+  # ---------------- 对话 / 视觉 / 记忆 / 向量化（OpenAI 兼容） ----------------
+  ollama:
+    profiles: ["models"]
+    image: ollama/ollama:latest
+    container_name: ke-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      # 必须监听 0.0.0.0，否则容器外（含 api 容器）连不上
+      OLLAMA_HOST: 0.0.0.0:11434
+      # 模型常驻时长：避免每次提问都重新加载（加载一次 7B 约数秒）
+      OLLAMA_KEEP_ALIVE: 24h
+      # 同时驻留的模型数：对话 + 向量各一个即可，太多会吃满内存
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      # 模型权重（ollama pull 的产物）
+      - ollama-data:/root/.ollama
+      # 可选：离线 GGUF 放这里，用 Modelfile 引用（见文档「离线部署」）
+      - ./models/ollama:/models:ro
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # ---- 可选：NVIDIA GPU ----
+    # 需要宿主机安装 nvidia-container-toolkit，并取消下面注释
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # 一次性任务：首次启动后拉取模型；需与 models profile 一起启用
+  # 用法：... --profile models --profile init run --rm ollama-init
+  ollama-init:
+    profiles: ["init"]
+    image: ollama/ollama:latest
+    container_name: ke-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        ollama pull ${LOCAL_CHAT_MODEL:-qwen2.5:7b} &&
+        ollama pull ${LOCAL_EMBEDDING_MODEL:-bge-m3}
+
+  # ---------------- 检索精排（Cross-Encoder /rerank） ----------------
+  # Ollama 没有 /rerank，精排必须用 llama.cpp（或 TEI / vLLM）。
+  # 模型文件：./models/rerank/bge-reranker-v2-m3-Q8_0.gguf
+  rerank:
+    profiles: ["rerank"]
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: ke-rerank
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models/rerank:/models:ro
+    command:
+      - -m
+      - /models/${RERANK_MODEL_FILE:-bge-reranker-v2-m3-Q8_0.gguf}
+      - --reranking          # 关键：暴露 /rerank；不加就是普通对话服务
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -c
+      - "8192"
+      - -b
+      - "4096"
+      - --ubatch-size
+      - "4096"               # 关键：默认 512 会让长文档直接 500
+      - --log-disable
+    # ---- 可选：NVIDIA GPU ----
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ---------------- 语音转写（FunASR SenseVoice-Small，可选） ----------------
+  speech:
+    profiles: ["speech"]
+    build:
+      context: .
+      dockerfile: deploy/local-models/funasr.Dockerfile
+    image: know-engine-funasr:latest
+    container_name: ke-speech
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      # 模型缓存落到卷里，重建容器不重复下载
+      MODELSCOPE_CACHE: /models/modelscope
+      HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - speech-models:/models
+    command:
+      - python
+      - -m
+      - funasr.bin.server
+      - --model
+      - sensevoice
+      - --device
+      - cpu
+      - --port
+      - "8001"
+
+  # ---------------- 业务应用：模型地址由 MODEL_HOST 决定 ----------------
+  # 模式 A（默认）：ollama / rerank 都是 compose 服务名，走内部网络
+  # 模式 B：MODEL_HOST=host.docker.internal，回到宿主机端口
+  # 两者都可被 LOCAL_*_BASE_URL 整体覆盖（例如指向另一台推理服务器）
+  api:
+    environment:
+      LLM__BASE_URL: ${LOCAL_LLM_BASE_URL:-http://${MODEL_HOST:-ollama}:11434/v1}
+      RERANK__BASE_URL: ${LOCAL_RERANK_BASE_URL:-http://${RERANK_HOST:-rerank}:8080}
+      SPEECH__BASE_URL: ${LOCAL_SPEECH_BASE_URL:-http://${SPEECH_HOST:-speech}:8001/v1}
+      LLM__CHAT_MODEL: ${LOCAL_CHAT_MODEL:-qwen2.5:7b}
+      LLM__FLASH_MODEL: ${LOCAL_FLASH_MODEL:-qwen2.5:1.5b}
+      LLM__EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-bge-m3}
+      # Ollama 不校验 Key，占位即可；本地端点留空也能通过鉴权
+      LLM__API_KEY: ${LOCAL_LLM_API_KEY:-local}
+
+volumes:
+  ollama-data:
+  speech-models:

@@ -296,6 +296,9 @@ know-engine-python/
 ├── sql/init/                       # MySQL 首次启动建库建账号
 ├── docker-compose.dev.yml          # 只启动中间件
 ├── docker-compose.prod.yml         # 中间件 + 一体化应用
+├── docker-compose.local-models.yml # 叠加：Ollama / 精排 / 语音模型进容器
+├── deploy/local-models/            # 本地模型镜像（FunASR）
+├── models/                         # 本地模型权重（git 忽略）
 ├── Dockerfile                      # 多阶段镜像
 ├── requirements.txt
 └── .env.example
@@ -572,6 +575,33 @@ MCP__SERVERS=[{"name":"search","transport":"stdio","command":"npx","args":["-y",
 
 本地模型（Ollama / vLLM）跑在宿主机时，容器内会自动把 `localhost` 重写为 `host.docker.internal`（compose 已配置 `extra_hosts`）。
 
+### 7.3 本地模型容器化
+
+如果不想在宿主机装 Ollama / llama.cpp / FunASR，可以用叠加编排把模型也收进 Docker，支持两种模式：
+
+```bash
+# 模式 A：业务 + 模型都进容器（--profile models；精排再加 rerank）
+docker compose -f docker-compose.prod.yml -f docker-compose.local-models.yml \
+  --profile models --profile rerank up -d --build
+docker compose -f docker-compose.prod.yml -f docker-compose.local-models.yml \
+  --profile models --profile init run --rm ollama-init
+
+# 模式 B：只起业务容器，模型仍在宿主机（.env: MODEL_HOST=host.docker.internal）
+docker compose -f docker-compose.prod.yml -f docker-compose.local-models.yml up -d --build
+```
+
+| 服务 | profile | 能力 | 容器内地址（模式 A） |
+| --- | --- | --- | --- |
+| `ollama` | `models` | 对话 / 视觉 / 记忆 / 向量化 | `http://ollama:11434/v1` |
+| `rerank` | `rerank` | 精排（llama.cpp `/rerank`） | `http://rerank:8080` |
+| `speech` | `speech` | 语音转写（FunASR） | `http://speech:8001/v1` |
+
+模式 B 下所有地址自动换成 `http://host.docker.internal:端口`（由 `MODEL_HOST` / `RERANK_HOST` /
+`SPEECH_HOST` 三个变量控制）；后端直接跑在宿主机（开发环境）时在模型配置里填 `http://localhost:端口` 即可。
+
+模型权重放在 `models/`（已被 git 忽略）。组件清单、拉取方式、寻址规则、GPU / 离线部署与排障见
+[本地模型容器化部署](docs/local-models-docker.md)。
+
 ---
 
 ## 8. API 概览
@@ -813,6 +843,7 @@ cd web && pnpm build
 | --- | --- |
 | [architecture-and-dataflow.md](docs/architecture-and-dataflow.md) | 总体架构、核心链路、数据流转矩阵、状态机 |
 | [chat-memory-design.md](docs/chat-memory-design.md) | 会话记忆、滚动摘要、标题生成 |
+| [local-models-docker.md](docs/local-models-docker.md) | 本地模型容器化：组件、拉取、寻址、离线与排障 |
 | [local-rerank-deploy.md](docs/local-rerank-deploy.md) | 本地精排服务部署与踩坑 |
 | [rerank-aliyun-adaptation.md](docs/rerank-aliyun-adaptation.md) | 阿里原生精排协议适配 |
 | [rerank-current-config.md](docs/rerank-current-config.md) | 当前精排配置说明 |

@@ -5,6 +5,8 @@
 __pycache__
 *.pyc
 data
+logs
+models
 web/node_modules
 web/dist
 web/.vite

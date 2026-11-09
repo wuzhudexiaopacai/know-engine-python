@@ -19,6 +19,9 @@ data/
 logs/
 *.log
 
+# ---- 本地模型权重（体积大，不入库；目录结构见 docs/local-models-docker.md）----
+models/
+
 # ---- 前端 ----
 web/node_modules/
 web/dist/
