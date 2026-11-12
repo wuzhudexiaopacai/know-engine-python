@@ -10,6 +10,8 @@ export interface RagReference {
   similarityScore: number | null
   retrievalSource: RetrievalSource
   rerankScore: number | null
+  /** 联网搜索来源的原始地址；知识库引用为空 */
+  url?: string | null
 }
 
 /** 引用片段定位详情（GET /api/chat/references/{chunkId}） */

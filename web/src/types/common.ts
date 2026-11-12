@@ -35,7 +35,7 @@ export type CacheStatus =
 export type MessageType = 'USER' | 'ASSISTANT'
 
 /** 检索来源（对齐 RetrievalSource） */
-export type RetrievalSource = 'vector' | 'fulltext' | 'hybrid' | 'sql' | 'graph' | 'qa_cache'
+export type RetrievalSource = 'vector' | 'fulltext' | 'hybrid' | 'sql' | 'graph' | 'qa_cache' | 'web'
 
 /** 身份：用户 / 管理员 */
 export type Identity = 'user' | 'admin' | 'guest'

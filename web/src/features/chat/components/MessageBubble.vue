@@ -25,6 +25,7 @@ const SOURCE_LABEL: Record<RetrievalSource, string> = {
   sql: 'SQL',
   graph: '图谱',
   qa_cache: '缓存',
+  web: '网页',
 }
 
 const isUser = computed(() => props.message.role === 'user')
@@ -38,6 +39,25 @@ const canFeedback = computed(
 const refsOpen = ref(false)
 function scoreText(v: number | null): string {
   return v === null ? '—' : v.toFixed(3)
+}
+
+/** 网页来源展示域名（去掉协议与路径），知识库引用返回空串 */
+function refHost(url?: string | null): string {
+  if (!url) return ''
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
+
+/** 点击引用：网页来源直接新窗口打开，知识库来源弹片段预览 */
+function openRef(r: RagReference): void {
+  if (r.url) {
+    window.open(r.url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  void openReference(r)
 }
 
 /** 引用预览：按 chunkId 回查文档章节与段序；缓存来源没有 chunkId 时展示快照片段 */
@@ -133,16 +153,17 @@ async function openReference(r: RagReference): Promise<void> {
         <ul v-show="refsOpen" class="msg__refs-list">
           <li v-for="(r, i) in message.references" :key="i" class="msg__ref"
               role="button" tabindex="0"
-              :aria-label="`查看引用片段：${r.documentTitle || '未知文档'}`"
-              @click="openReference(r)"
-              @keydown.enter.prevent="openReference(r)">
+              :aria-label="r.url ? `打开网页来源：${r.documentTitle || r.url}` : `查看引用片段：${r.documentTitle || '未知文档'}`"
+              @click="openRef(r)"
+              @keydown.enter.prevent="openRef(r)">
             <div class="msg__ref-head">
               <el-tag size="small" effect="plain">{{ SOURCE_LABEL[r.retrievalSource] ?? r.retrievalSource }}</el-tag>
               <span class="msg__ref-title ke-truncate">{{ r.documentTitle || '未知文档' }}</span>
-              <span class="msg__ref-score">相似度 {{ scoreText(r.similarityScore) }}</span>
+              <span v-if="r.url" class="msg__ref-score ke-truncate">{{ refHost(r.url) }}</span>
+              <span v-else class="msg__ref-score">相似度 {{ scoreText(r.similarityScore) }}</span>
             </div>
             <p class="msg__ref-snippet">{{ r.chunkContent }}</p>
-            <span class="msg__ref-more">查看片段</span>
+            <span class="msg__ref-more">{{ r.url ? '打开网页' : '查看片段' }}</span>
           </li>
         </ul>
       </div>

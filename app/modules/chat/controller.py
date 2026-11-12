@@ -36,6 +36,8 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: str | None = None
     use_cache: bool = True
+    web_search: bool = Field(default=False,
+                             description="用户显式开启联网搜索：强制调用外部搜索并返回网页来源")
     model_id: int | None = Field(default=None, description="管理员配置的对话模型 id，空则用默认模型")
     images: list[str] = Field(default_factory=list, max_length=4,
                               description="已上传图片的访问地址（/api/files/...），最多 4 张")
@@ -68,7 +70,8 @@ async def stream_chat(body: ChatRequest,
     agen = pipeline.stream_chat(
         user_id=user.owner_key, conversation_id=body.conversation_id,
         question=body.question, user_identity=user.identity_for_retrieval,
-        use_cache=body.use_cache, model_id=body.model_id, images=images)
+        use_cache=body.use_cache, model_id=body.model_id, images=images,
+        web_search=body.web_search)
 
     async def encode():
         queue: asyncio.Queue = asyncio.Queue()

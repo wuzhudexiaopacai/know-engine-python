@@ -8,6 +8,8 @@ export interface SendOptions {
   question: string
   conversationId: string | null
   useCache: boolean
+  /** 用户显式开启联网搜索：后端强制调用外部搜索并回传网页来源 */
+  webSearch?: boolean
   /** 用户选择的模型 id；null 表示用默认模型 */
   modelId?: number | null
   /** 本轮附带的图片地址（已上传） */
@@ -60,6 +62,7 @@ export function useChatStream() {
           question: opts.question,
           conversation_id: opts.conversationId,
           use_cache: opts.useCache,
+          web_search: opts.webSearch ?? false,
           model_id: opts.modelId ?? null,
           images: opts.images ?? [],
         },

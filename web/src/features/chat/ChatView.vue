@@ -32,6 +32,8 @@ const messages = ref<UiMessage[]>([])
 const threadLoading = ref(false)
 const input = ref('')
 const useCache = ref(true)
+/** 联网搜索：显式开启后本轮强制调用外部搜索，并在答案下方展示网页来源 */
+const webSearch = ref(false)
 /** 新会话空态建议问题（基于用户记忆动态拉取） */
 const suggestions = ref<string[]>([
   'Redis 的持久化方案怎么选？',
@@ -306,7 +308,7 @@ async function ask(question: string, reuseTarget?: UiMessage,
   await send(
     {
       question: text, conversationId: activeId.value, useCache: useCache.value,
-      modelId: selectedModelId.value, images,
+      webSearch: webSearch.value, modelId: selectedModelId.value, images,
     },
     target,
     {
@@ -627,6 +629,10 @@ onBeforeUnmount(() => {
               <label class="chat__cache">
                 <el-switch v-model="useCache" size="small" :disabled="isForeign" aria-label="优先命中问答缓存" />
                 <span>优先命中问答缓存</span>
+              </label>
+              <label class="chat__cache">
+                <el-switch v-model="webSearch" size="small" :disabled="isForeign" aria-label="联网搜索" />
+                <span>联网搜索</span>
               </label>
               <div
                 v-if="models.length"

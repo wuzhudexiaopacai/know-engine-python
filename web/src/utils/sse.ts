@@ -10,6 +10,8 @@ export interface StreamChatRequest {
   question: string
   conversation_id?: string | null
   use_cache?: boolean
+  /** 用户显式开启联网搜索：后端强制调用外部搜索并回传网页来源 */
+  web_search?: boolean
   /** 管理员配置的对话模型 id，空则后端用默认模型 */
   model_id?: number | null
   /** 已上传图片的访问地址（/api/files/...），最多 4 张 */

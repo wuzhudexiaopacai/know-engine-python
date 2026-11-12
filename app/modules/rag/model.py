@@ -42,6 +42,8 @@ class RagReference:
     similarity_score: float | None
     retrieval_source: str
     rerank_score: float | None = None
+    # 联网搜索来源的原始地址；知识库引用为 None，前端据此渲染为可点击外链
+    url: str | None = None
 
     def to_dict(self) -> dict:
         """前端契约：camelCase，与 chat 页面溯源卡片一一对应。"""
@@ -54,6 +56,7 @@ class RagReference:
             "similarityScore": self.similarity_score,
             "retrievalSource": self.retrieval_source,
             "rerankScore": self.rerank_score,
+            "url": self.url,
         }
 
 

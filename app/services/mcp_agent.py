@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from app.config.settings import get_settings
 from app.core.logging import get_logger
@@ -36,10 +38,12 @@ _SYSTEM = (
 
 @dataclass
 class ToolAugment:
-    """工具补充结果：text 注入生成 Prompt，used 记录调用过的工具。"""
+    """工具补充结果：text 注入生成 Prompt，used 记录调用过的工具，
+    sources 为可供前端展示、点击跳转的外部来源（网页搜索结果）。"""
 
     text: str = ""
     used: list[str] = field(default_factory=list)
+    sources: list[dict] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
@@ -118,13 +122,83 @@ def _failed(output: str) -> bool:
     return output.startswith("（工具 ")
 
 
-async def augment(question: str, history: str, *, llm, chunks: list) -> ToolAugment:
-    """补充外部资料：时效性问题直接搜索，其余交给模型自主决定。"""
+# 搜索结果一般是 markdown 或 JSON 文本：优先取 [标题](链接)，退化到裸链接
+_MD_LINK = re.compile(r"\[([^\]\n]{1,120})\]\((https?://[^\s)]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s\"')\]，。；]+")
+_MD_NOISE = re.compile(r"[*`#>]+")
+
+
+def _clean(text: str) -> str:
+    """去掉 markdown 装饰符与多余空白，得到可直接展示的标题/摘要。
+
+    不剥离下划线：链接与域名里 `_` 是合法字符，剥离会把 URL 改坏。
+    """
+    return " ".join(_MD_NOISE.sub("", text or "").split())
+
+
+def _host(url: str) -> str:
+    try:
+        return urlparse(url).netloc or url
+    except ValueError:
+        return url
+
+
+def _extract_sources(findings: list[tuple[str, str]], limit: int = 6) -> list[dict]:
+    """从工具输出中提取可展示的来源链接（按出现顺序去重，最多 limit 条）。
+
+    只做轻量解析：不假设具体搜索服务（Tavily / Bing / 自建）的返回结构，
+    任何形如 markdown 链接或裸 URL 的内容都视为可引用来源。
+    两遍扫描：先收带标题的 markdown 链接（信息最全），再用裸链接补漏，
+    避免「URL: xxx」这类无标题行抢先占位、丢掉真实标题。
+    """
+    sources: list[dict] = []
+    seen: set[str] = set()
+
+    def add(url: str, title: str, snippet: str) -> None:
+        url = url.rstrip(".,;")
+        if not url or url in seen:
+            return
+        seen.add(url)
+        sources.append({"title": title or _host(url), "url": url,
+                        "snippet": snippet[:200]})
+
+    for _, output in findings:
+        lines = [ln.strip() for ln in (output or "").splitlines()]
+        for idx, line in enumerate(lines):
+            if not line:
+                continue
+            for m in _MD_LINK.finditer(line):
+                title = _clean(m.group(1))
+                # 链接独占一行时（搜索结果常见排版），用下一行摘要做片段
+                snippet = _clean(_MD_LINK.sub("", line)).lstrip("-—• ")
+                if not snippet:
+                    snippet = next((_clean(n).lstrip("-—• ") for n in lines[idx + 1:]
+                                    if n.strip()), "")
+                add(m.group(2), title, snippet or title)
+
+    for _, output in findings:
+        for raw in (output or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            snippet = _clean(_MD_LINK.sub(r"\1", line)).lstrip("-—• ")
+            for m in _BARE_URL.finditer(line):
+                add(m.group(0), "", snippet)
+    return sources[:limit]
+
+
+async def augment(question: str, history: str, *, llm, chunks: list,
+                  force: bool = False) -> ToolAugment:
+    """补充外部资料：时效性问题直接搜索，其余交给模型自主决定。
+
+    force=True 表示用户在本轮显式开启了「联网搜索」：无论知识库是否召回、
+    问题是否带时效性词，都执行一次搜索并回传来源链接。
+    """
     mcp = get_mcp()
-    if not mcp.enabled or not should_use_tools(question, chunks):
+    if not mcp.enabled or (not force and not should_use_tools(question, chunks)):
         return ToolAugment()
     # 只是问当前日期/时间：system prompt 里的本机时间就是权威答案，无需联网
-    if is_clock_question(question):
+    if not force and is_clock_question(question):
         return ToolAugment()
     tools = await mcp.list_tools()
     if not tools:
@@ -132,7 +206,7 @@ async def augment(question: str, history: str, *, llm, chunks: list) -> ToolAugm
 
     findings: list[tuple[str, str]] = []
     # 时效性问题直接调用搜索工具：模型常"自信地"编造日期/版本，等它主动调工具不可靠
-    if is_time_sensitive(question):
+    if force or is_time_sensitive(question):
         search = _pick_search_tool(tools)
         args = _direct_args(search, question) if search is not None else None
         if search is not None and args is not None:
@@ -145,8 +219,10 @@ async def augment(question: str, history: str, *, llm, chunks: list) -> ToolAugm
     if not findings:
         return ToolAugment()
     text = "\n\n".join(f"[工具:{name}]\n{out}" for name, out in findings)
-    logger.info("mcp_tools_used", tools=[n for n, _ in findings], chars=len(text))
-    return ToolAugment(text=text, used=[n for n, _ in findings])
+    sources = _extract_sources(findings)
+    logger.info("mcp_tools_used", tools=[n for n, _ in findings],
+                chars=len(text), sources=len(sources), forced=force)
+    return ToolAugment(text=text, used=[n for n, _ in findings], sources=sources)
 
 
 async def _model_tool_loop(mcp, question: str, history: str, llm,

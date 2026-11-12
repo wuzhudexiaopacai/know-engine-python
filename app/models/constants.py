@@ -85,6 +85,7 @@ class RetrievalSource(StrEnum):
     SQL = "sql"
     GRAPH = "graph"
     QA_CACHE = "qa_cache"
+    WEB = "web"
 
 
 class CacheStatus(StrEnum):

@@ -28,11 +28,12 @@ from app.config.settings import get_settings
 from app.core.exceptions import ParamError
 from app.core.logging import get_logger
 from app.infra import stop_signal
+from app.models.constants import RetrievalSource
 from app.modules.chat import service as chat
 from app.modules.document import service as document_service
 from app.modules.model import service as model_service
 from app.modules.rag import analysis, graph, retrieval, text2sql
-from app.modules.rag.model import IntentResult, RetrievedChunk, RouteResult
+from app.modules.rag.model import IntentResult, RagReference, RetrievedChunk, RouteResult
 from app.services import mcp_agent
 from app.services.llm_client import get_llm, get_model_llm
 from app.services.prompt_loader import render
@@ -44,6 +45,26 @@ _TABLE_HINT = "tech_article(技术文章：语言/框架/分类/阅读量/点赞
 
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _MAX_IMAGE_SIDE = 1024          # 视觉模型上下文有限：大图按最长边缩放，避免图片 token 撑爆上下文
+
+
+def _web_references(sources: list[dict]) -> list[dict]:
+    """把联网搜索来源转成前端引用条目（可点击外链，无 chunkId）。"""
+    refs: list[dict] = []
+    for s in sources:
+        url = (s.get("url") or "").strip()
+        if not url:
+            continue
+        refs.append(RagReference(
+            document_id="",
+            document_title=s.get("title") or url,
+            chunk_id=None,
+            version=None,
+            chunk_content=s.get("snippet") or s.get("title") or url,
+            similarity_score=None,
+            retrieval_source=RetrievalSource.WEB.value,
+            url=url,
+        ).to_dict())
+    return refs
 
 
 def _shrink_image(data: bytes, max_side: int = _MAX_IMAGE_SIDE) -> tuple[bytes, str | None]:
@@ -134,7 +155,8 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
                       *, user_identity: str | None = None,
                       use_cache: bool = True,
                       model_id: int | None = None,
-                      images: list[str] | None = None) -> AsyncIterator[tuple[str, dict]]:
+                      images: list[str] | None = None,
+                      web_search: bool = False) -> AsyncIterator[tuple[str, dict]]:
     """主入口：注册会话级停止信号后转发内部生成器。
 
     传 images 时改用「图片理解」视觉模型做多模态生成，并跳过意图/改写/路由；
@@ -175,7 +197,7 @@ async def stream_chat(user_id: str, conversation_id: str | None, question: str,
                 user_identity=user_identity, use_cache=use_cache and not image_parts,
                 llm=llm, model_name=model_name, skip_analysis=skip_analysis,
                 display_question=display_question, image_parts=image_parts,
-                is_new=is_new):
+                is_new=is_new, web_search=web_search and not image_parts):
             await hub.publish(conv_id, *item)
             yield item
     finally:
@@ -191,7 +213,8 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
                        skip_analysis: bool = False,
                        display_question: str | None = None,
                        image_parts: list[dict] | None = None,
-                       is_new: bool = False) -> AsyncIterator[tuple[str, dict]]:
+                       is_new: bool = False,
+                       web_search: bool = False) -> AsyncIterator[tuple[str, dict]]:
     """管道主体：产出 (event_name, data) 序列。event_name 取自 SseEvent。
 
     会话已由主入口 ensure 并注册停止信号，此处直接复用，不再重复建会话。"""
@@ -242,9 +265,12 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
 
     # ---- 1. QA 缓存命中：直接返回审核过的标准答案 ----
     # 时效性问题（今天/最新/价格…）不查缓存：缓存是历史答案，越久越错
-    if use_cache and mcp_agent.is_time_sensitive(question):
+    # 用户显式开启联网搜索时也跳过缓存：否则拿到的是库存答案，且不会产生网页来源
+    if web_search:
+        logger.info("qa_cache_skipped_web_search", question=question[:40])
+    elif use_cache and mcp_agent.is_time_sensitive(question):
         logger.info("qa_cache_skipped_time_sensitive", question=question[:40])
-    if use_cache and not mcp_agent.is_time_sensitive(question):
+    if use_cache and not web_search and not mcp_agent.is_time_sensitive(question):
         try:
             from app.modules.qa_cache import service as qa_cache
             hit = await qa_cache.lookup(question, conv_id, assistant_msg_id)
@@ -286,12 +312,13 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
     if not intent.related:
         # 闲聊分流下同样可能问实时信息（今天新闻/最新版本），先联网补充再生成
         tool_text = ""
-        if (mcp_agent.enabled() and mcp_agent.is_time_sensitive(question)
-                and not mcp_agent.is_clock_question(question)):
-            yield progress("正在查询外部资料...")
+        if (mcp_agent.enabled()
+                and (web_search or mcp_agent.is_time_sensitive(question))
+                and (web_search or not mcp_agent.is_clock_question(question))):
+            yield progress("正在联网搜索...")
             try:
                 tool_text = (await mcp_agent.augment(
-                    question, history, llm=llm, chunks=[])).text
+                    question, history, llm=llm, chunks=[], force=web_search)).text
             except Exception as e:
                 logger.warning("mcp_augment_skipped", error=str(e))
         yield progress("正在为您生成回答...")
@@ -355,14 +382,17 @@ async def _stream_chat(stop_event: asyncio.Event, user_id: str,
         yield SseEvent.ERROR, {"message": "检索暂时不可用，已按通用知识回答"}
         chunks, references = [], []
 
-    # ---- 4.5 MCP 工具补充：检索为空或问题有时效性诉求时联网搜索 ----
-    # 本地小模型端点通常不支持 function calling，跳过以免多一轮无效请求
+    # ---- 4.5 MCP 工具补充：检索为空、问题有时效性或用户开启联网搜索时联网 ----
+    # 本地小模型端点通常不支持 function calling，跳过以免多一轮无效请求；
+    # 但用户显式开启联网时不跳过——搜索工具走的是直连调用，不依赖 function calling。
     tool_text = ""
-    if not skip_analysis and mcp_agent.enabled():
+    if (not skip_analysis or web_search) and mcp_agent.enabled():
         try:
-            yield progress("正在查询外部资料...")
-            augment = await mcp_agent.augment(question, history, llm=llm, chunks=chunks)
+            yield progress("正在联网搜索...")
+            augment = await mcp_agent.augment(question, history, llm=llm,
+                                              chunks=chunks, force=web_search)
             tool_text = augment.text
+            references.extend(_web_references(augment.sources))
         except Exception as e:
             logger.warning("mcp_augment_skipped", error=str(e))
 
