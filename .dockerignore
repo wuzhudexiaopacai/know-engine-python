@@ -6,7 +6,8 @@ __pycache__
 *.pyc
 data
 logs
-models
+# 只忽略根目录的模型权重目录；不加前导斜杠会误伤 app/models 源码包
+/models
 web/node_modules
 web/dist
 web/.vite

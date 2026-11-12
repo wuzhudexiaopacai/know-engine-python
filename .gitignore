@@ -20,7 +20,8 @@ logs/
 *.log
 
 # ---- 本地模型权重（体积大，不入库；目录结构见 docs/local-models-docker.md）----
-models/
+# 注意必须锚定根目录：不写开头斜杠会连 app/models 源码包一起忽略
+/models/
 
 # ---- 前端 ----
 web/node_modules/
